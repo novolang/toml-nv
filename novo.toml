@@ -1,6 +1,6 @@
 [package]
 name        = "toml-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "TOML 1.0.0, read and written without performing anything: a typed value tree whose date arms are calendar-nv's civil types, a parser that names the line and the column of every refusal, dotted-key and table access, a canonical writer that preserves nothing, and an editing document that preserves comments, key order and spacing so a tool can change one value and hand the file back."
 license     = "Apache-2.0"
 
@@ -41,4 +41,4 @@ maintainers = ["novo-lang"]
 # failure `docs/publishing.md` § Public type names are globally unique
 # describes.  A path dependency until both are on the registry;
 # `core`, so the layer rule holds.
-calendar-nv = { path = "../calendar-nv", version = "^0.0.1" }
+calendar-nv = "^0.0.1"
