@@ -1,0 +1,298 @@
+// tomledit.nv — the formatter that preserves everything.
+//
+// THE PROBLEM THIS MODULE EXISTS FOR
+//
+// A tool reads a person's `novo.toml`, changes one version number, and
+// writes it back.  Through `tomlwrite` that produces a diff touching
+// every line, with the comments gone and the sections reordered, and
+// the person's next `git diff` is unreadable.  That is not a
+// hypothetical: it is what `novo pkg add` does to a manifest, what a
+// dependency bot does to a lock file, and what an installer does to a
+// config file — and it is the single most common thing a TOML library
+// is asked for after parsing.
+//
+// So `TomlEdit` is a document that remembers its own bytes.  Reading
+// one keeps every comment, every blank line, the spacing around each
+// `=`, whether a string was basic or literal, whether a table was a
+// header or inline, and the order everything appeared in.  Setting a
+// value rewrites the SPAN that value occupied and nothing else.
+// Rendering a document nobody changed gives back the input byte for
+// byte — which is the property the whole module is designed around,
+// and `is_unchanged` is how a caller can assert it.
+//
+// WHY IT IS A SEPARATE TYPE AND NOT A FLAG ON `TomlValue`
+//
+// Because the two have different laws.  `TomlValue` is a value: two
+// trees that hold the same data ARE the same tree, and `tomlnode.equal`
+// says so.  A `TomlEdit` is a document: two files that hold the same
+// data with different comments are different files, and a type that
+// conflated them would make `equal` answer one of the two questions
+// and be wrong about the other.  Keeping trivia on `TomlValue` would
+// also make every consumer that just wants a config value carry bytes
+// it will never look at — including the embedded ones, where that is
+// the difference between fitting and not.
+//
+// `value_of` is the bridge, one way.  There is no `from_value`,
+// because a tree has no trivia to preserve and a document made from
+// one is exactly `tomlwrite.to_string` — asking for it here would be
+// asking for the canonical writer under a name that promises
+// otherwise.
+//
+// WHAT "PRESERVES" DOES NOT PROMISE
+//
+// Setting a value rewrites that value's span.  It does NOT reflow the
+// line, re-wrap a long array, or move a comment that was on the same
+// line — the comment stays where it was, after the new value.  Setting
+// a key that does not exist appends it at the end of its table, after
+// the last key and before the next header, with the surrounding
+// document untouched.  Nothing here reformats anything a caller did
+// not name, which is the difference between an editor and a formatter,
+// and this module is the first.
+
+use tomlnode
+
+// A TOML document that remembers how it was written.
+//
+// Opaque: the fields are the spans and the source text, they are not
+// something a caller should reach into, and the module's functions are
+// the whole surface.  Carried by value like everything else in this
+// package — `[mutate]` is a host effect and there is none here, so
+// `set` returns a new document and the old one is still valid.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d = tomledit.parse("# a comment\nport = 8080\n")!
+//     println("${tomledit.is_unchanged(d)}")    // true
+// ```
+pub struct TomlEdit
+    // The document as it currently stands.  After a `set` this is the
+    // rewritten text, not the original — `original` is the original.
+    text: Str
+    // The text this document was parsed from, kept so that
+    // `is_unchanged` is a comparison and not a guess, and so that a
+    // caller can show a diff without having kept the input itself.
+    original: Str
+    // The parsed tree, in step with `text`.  Rebuilt on every edit,
+    // because an edit is rare and a stale tree is a bug that only
+    // shows up in the caller's output.
+    value: TomlValue
+    // Byte offsets into `text` of every leaf value, in the same
+    // depth-first order as `tomlkeys.paths`.  Two entries per leaf,
+    // start and end, flattened — a list of pairs would be a second
+    // public type carrying no information this one does not.
+    spans: [Int]
+    // The dotted path of each leaf, parallel to `spans`.  A lookup is
+    // a scan of this; a document with enough keys for that to matter
+    // is not a document a person edits.
+    paths: [Str]
+
+// Parse a document, keeping everything.
+//
+// The same grammar as `tomlread.parse` and the same errors — a
+// document one refuses the other refuses, at the same position.  The
+// difference is only what is kept.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     match tomledit.parse("# keep me\na = 1\n")
+//         Ok(d)  => print(tomledit.to_string(d))     // # keep me\na = 1\n
+//         Err(e) => println(e.message())
+// ```
+pub fn parse(text: Str) -> Result<TomlEdit, TomlError>
+    todo("toml-nv.tomledit.parse")
+
+// The document as text.
+//
+// Byte for byte the input, for a document nobody has edited.  That is
+// the load-bearing property of this module and it is worth stating as
+// a law rather than as a hope: `to_string(parse(s)!) == s` for every
+// `s` that parses.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let s = "# c\n\n[db]\nport = 5432  # inline\n"
+//     println("${tomledit.to_string(tomledit.parse(s)!) == s}")   // true
+// ```
+pub fn to_string(d: TomlEdit) -> Str
+    todo("toml-nv.tomledit.to_string")
+
+// The document as bytes, UTF-8.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d = tomledit.parse("a = 1\n")!
+//     println("${bytes.len(tomledit.to_bytes(d))}")   // 6
+// ```
+pub fn to_bytes(d: TomlEdit) -> Bytes
+    todo("toml-nv.tomledit.to_bytes")
+
+// The value tree, for reading.
+//
+// The bridge to `tomlkeys`: every lookup in that module takes a
+// `TomlValue`, and this is how an editing document supplies one.  The
+// trivia does not come with it, which is the point — a caller reading
+// `db.port` should not have to know the document had comments.
+//
+// ```novo
+// use tomledit
+// use tomlkeys
+//
+// fn main() [io]
+//     let d = tomledit.parse("[db]\nport = 5432\n")!
+//     println("${tomlkeys.int_at(tomledit.value_of(d), "db.port")!}")
+// ```
+pub fn value_of(d: TomlEdit) -> TomlValue
+    todo("toml-nv.tomledit.value_of")
+
+// Set the value at a dotted path, rewriting that span and nothing
+// else.
+//
+// An existing key keeps its line, its spacing and its trailing
+// comment; only the bytes between the `=` and the end of the value are
+// replaced.  A key that does not exist is appended at the end of its
+// table — after the last key, before the next header, with a newline
+// and the table's own indentation.  Missing intermediate tables are
+// created as `[headers]` at the end of the document, in path order.
+//
+// `WrongType` when an intermediate segment resolves to a non-table,
+// which is the same refusal `tomlkeys.set` makes and for the same
+// reason: replacing `a = 1` when told to set `a.b` loses a setting.
+//
+// ```novo
+// use tomledit
+// use tomlnode
+//
+// fn main() [io]
+//     let d  = tomledit.parse("[db]\nport = 5432  # the port\n")!
+//     let d2 = tomledit.set(d, "db.port", TomlInt(5433))!
+//     print(tomledit.to_string(d2))         // [db]\nport = 5433  # the port\n
+// ```
+pub fn set(d: TomlEdit, path: Str, value: TomlValue) -> Result<TomlEdit, TomlError>
+    todo("toml-nv.tomledit.set")
+
+// Remove the key at a dotted path, and the line it was on.
+//
+// The WHOLE line goes, its trailing comment with it, because a
+// trailing comment describes the key it follows and leaving it behind
+// orphaned is worse than either alternative.  A comment on its own
+// line ABOVE the key stays: this module cannot know whether it
+// described the key, the section, or the file, and deleting a person's
+// prose on a guess is not a thing a library should do.
+//
+// `NoSuchKey` when it was not there, and the empty table left behind
+// stays — the same rule `tomlkeys.remove` follows.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d  = tomledit.parse("a = 1\nb = 2\n")!
+//     let d2 = tomledit.remove(d, "a")!
+//     print(tomledit.to_string(d2))         // b = 2\n
+// ```
+pub fn remove(d: TomlEdit, path: Str) -> Result<TomlEdit, TomlError>
+    todo("toml-nv.tomledit.remove")
+
+// Whether the document still renders as the bytes it was parsed from.
+//
+// `true` for an untouched document, and `true` for one whose edits
+// happened to restore it — setting `port` to the value it already had
+// leaves the text identical, and reporting a change nobody can see
+// would make a tool write a file it did not need to.  That is the
+// question a caller actually has: "do I have to write this file?"
+//
+// ```novo
+// use tomledit
+// use tomlnode
+//
+// fn main() [io]
+//     let d = tomledit.parse("a = 1\n")!
+//     println("${tomledit.is_unchanged(tomledit.set(d, "a", TomlInt(1))!)}")   // true
+// ```
+pub fn is_unchanged(d: TomlEdit) -> Bool
+    todo("toml-nv.tomledit.is_unchanged")
+
+// The comment attached to a key, without its `#` and without the
+// leading space.
+//
+// A key's comment is the trailing one on its own line if there is one,
+// and otherwise the run of whole-line comments immediately above it
+// with no blank line between.  `None` when there is neither.  It is
+// here because a `--explain` flag, a documentation generator and a
+// migration that wants to carry a note across all need to read the
+// prose a person wrote, and reparsing the file to find it is what
+// every tool does instead today.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d = tomledit.parse("# the listening port\nport = 8080\n")!
+//     println(tomledit.comment_at(d, "port") ?? "")   // the listening port
+// ```
+pub fn comment_at(d: TomlEdit, path: Str) -> ?Str
+    todo("toml-nv.tomledit.comment_at")
+
+// Set, replace or remove the comment above a key.
+//
+// `""` removes it.  A multi-line comment is a string with newlines in
+// it, and each line comes back out with a `# ` in front.  The key's
+// own line is untouched: this writes the comment ABOVE, never the
+// trailing one, because a trailing comment has a column a person chose
+// and rewriting it would move it.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d  = tomledit.parse("port = 8080\n")!
+//     let d2 = tomledit.set_comment(d, "port", "the listening port")!
+//     print(tomledit.to_string(d2))     // # the listening port\nport = 8080\n
+// ```
+pub fn set_comment(d: TomlEdit, path: Str, comment: Str) -> Result<TomlEdit, TomlError>
+    todo("toml-nv.tomledit.set_comment")
+
+// The byte span the value at a path occupies, as `(start, end)`.
+//
+// Half-open, 0-based, into `to_string(d)`.  `None` for a path that is
+// not there.  It is what an editor highlights, what a language server
+// reports a diagnostic on, and what a caller doing its own splicing
+// needs — and it is public because a package that kept the spans to
+// itself would make every one of those callers reparse.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d = tomledit.parse("a = 1\n")!
+//     match tomledit.span_of(d, "a")
+//         Some((s, e)) => println("${s}..${e}")     // 4..5
+//         None         => println("no such key")
+// ```
+pub fn span_of(d: TomlEdit, path: Str) -> ?(Int, Int)
+    todo("toml-nv.tomledit.span_of")
+
+// The 1-based line and column a path's value starts at.
+//
+// `(-1, -1)` for a path that is not there, matching what `tomlerror`
+// does for a reason with no position — one convention for "no
+// position" in the package rather than two.
+//
+// ```novo
+// use tomledit
+//
+// fn main() [io]
+//     let d = tomledit.parse("[db]\nport = 5432\n")!
+//     let (l, c) = tomledit.position_of(d, "db.port")
+//     println("${l}:${c}")                      // 2:8
+// ```
+pub fn position_of(d: TomlEdit, path: Str) -> (Int, Int)
+    todo("toml-nv.tomledit.position_of")

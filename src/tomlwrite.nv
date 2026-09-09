@@ -1,0 +1,209 @@
+// tomlwrite.nv — the writer that preserves nothing.
+//
+// TWO WRITERS, AND WHY THAT IS NOT ONE TOO MANY
+//
+// This module renders a `TomlValue` and throws away everything that
+// was not in it: comments, key order beyond the tree's own, blank
+// lines, whether a table was a header or an inline one, whether a
+// string was basic or literal.  What comes out is CANONICAL — the same
+// tree always renders the same bytes — and that is exactly what a
+// program GENERATING a file wants: a lock file, a manifest a scaffold
+// writes, a fixture, a `--json`-to-`--toml` conversion.
+//
+// It is exactly what a program EDITING a file must not use.  A tool
+// that reads a person's `novo.toml`, changes a version number and
+// writes it back through here hands them a diff touching every line
+// and a file with their comments gone.  `tomledit` is that path, and
+// the split is the whole reason there are two modules: one type that
+// tried to do both would have to keep the trivia, and then the
+// canonical writer would be a lossy operation on a lossless type
+// rather than the only operation on a lossy one.
+//
+// A LIBRARY DOES NOT PRINT
+//
+// Every function here returns a `Str` or appends to a `StrBuf` the
+// caller owns.  Nothing opens a file and nothing writes to a console:
+// `docs/publishing.md` § Design is explicit that a library returns the
+// text or takes the writer, and this package has no effects with which
+// to do otherwise even if it wanted to.
+//
+// WHAT THE STYLE DOES NOT LET YOU CHOOSE
+//
+// `TomlStyle` has four fields and there is a reason each of the
+// obvious fifth ones is missing.  There is no "quote style" choice,
+// because a basic string with the escapes TOML requires is always
+// valid and a literal string is not always available.  There is no
+// "always inline" flag, because an inline table may not span a line
+// and a deep tree would produce one unreadable line rather than a
+// document.  And there is no key ordering: the tree's order IS the
+// document's order, and a writer that sorted would make
+// `parse |> to_string |> parse` stop being the identity it is.
+
+// How a canonical document is spelled.
+//
+// `standard()` is the shape TOML's own examples have and the one to
+// use unless something specific is wanted.
+//
+// ```novo
+// use tomlwrite
+//
+// fn main() [io]
+//     let s = tomlwrite.standard()
+//     println("${s.indent}")                    // 0
+// ```
+pub struct TomlStyle
+    // Spaces of indentation per level of nested `[table.header]`.
+    // `0` — the standard — leaves headers and keys flush left, which
+    // is what TOML documents in the wild look like.  A positive value
+    // indents the keys under each header, which some generated files
+    // prefer.
+    indent: Int
+    // Render an array on one line while it fits in this many columns,
+    // and one item per line when it does not.  `0` means never wrap.
+    // A column budget rather than an item count because what makes an
+    // array unreadable is its width, and a `[1, 2, 3, …]` of forty
+    // small integers reads better in one line than forty.
+    array_width: Int
+    // Emit a blank line before each `[table]` header.  `true` in the
+    // standard style: it is the one piece of whitespace that is
+    // structural rather than decorative, because without it a header
+    // reads as belonging to the keys above it.
+    blank_before_table: Bool
+    // Prefer `[table]` headers over inline tables for nested tables.
+    // `true` in the standard style.  When `false`, a table nested
+    // inside an ARRAY still becomes a header — `[[array.of.tables]]` —
+    // because an inline table may not contain a newline and the
+    // alternative for a large one is a line nobody can read.
+    prefer_headers: Bool
+
+// The style TOML's own specification writes its examples in: no
+// indentation, arrays wrapped past 80 columns, a blank line before
+// each header, headers preferred over inline tables.
+//
+// ```novo
+// use tomlwrite
+// use tomlread
+//
+// fn main() [io]
+//     let doc = tomlread.parse("a = 1\n")!
+//     println(tomlwrite.to_string(doc, tomlwrite.standard())!)
+// ```
+pub fn standard() -> TomlStyle
+    todo("toml-nv.tomlwrite.standard")
+
+// The most compact valid spelling: no indentation, no wrapping, no
+// blank lines, inline tables wherever they fit on a line.
+//
+// For a generated file nobody reads — a cache, a lock file, a value
+// written to a socket — where bytes matter more than the diff.
+//
+// ```novo
+// use tomlwrite
+//
+// fn main() [io]
+//     println("${tomlwrite.compact().blank_before_table}")   // false
+// ```
+pub fn compact() -> TomlStyle
+    todo("toml-nv.tomlwrite.compact")
+
+// Render a document.
+//
+// `v` must be a `TomlTable` — a TOML document is a table, and there is
+// no document whose top level is an integer.  Anything else is
+// `WrongType` with the path `""`, which is how this module names the
+// root.
+//
+// The result always ends in exactly one newline, whatever the tree
+// looked like, because a text file that does not is a text file every
+// tool complains about.
+//
+// ```novo
+// use tomlread
+// use tomlwrite
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     print(tomlwrite.to_string(doc, tomlwrite.standard())!)
+// ```
+pub fn to_string(v: TomlValue, style: TomlStyle) -> Result<Str, TomlError>
+    todo("toml-nv.tomlwrite.to_string")
+
+// Render a document as bytes.
+//
+// UTF-8, which is the only encoding a TOML document has.  It is here
+// so that a caller writing to a socket or a file does not convert a
+// string it is about to convert back.
+//
+// ```novo
+// use tomlread
+// use tomlwrite
+//
+// fn main() [io]
+//     let doc = tomlread.parse("a = 1\n")!
+//     let b = tomlwrite.to_bytes(doc, tomlwrite.standard())!
+//     println("${bytes.len(b)}")
+// ```
+pub fn to_bytes(v: TomlValue, style: TomlStyle) -> Result<Bytes, TomlError>
+    todo("toml-nv.tomlwrite.to_bytes")
+
+// Render ONE value, as it would appear on the right of an `=`.
+//
+// A string comes back quoted and escaped, an array bracketed, a table
+// inline.  It is what a `--set` flag echoes back, what an error
+// message quotes, and what a caller assembling a line by hand needs.
+// A table too deep to be inline is still rendered inline here — this
+// function has no document to put a header in — so a caller rendering
+// a large tree wants `to_string`.
+//
+// ```novo
+// use tomlwrite
+// use tomlnode
+//
+// fn main() [io]
+//     println(tomlwrite.value_to_string(TomlStr("a\nb")))    // "a\nb"
+// ```
+pub fn value_to_string(v: TomlValue) -> Str
+    todo("toml-nv.tomlwrite.value_to_string")
+
+// A key rendered as a document would spell it: bare when TOML's bare
+// key grammar allows it, quoted and escaped when it does not.
+//
+// ```novo
+// use tomlwrite
+//
+// fn main() [io]
+//     println(tomlwrite.key_to_string("a-b"))   // a-b
+//     println(tomlwrite.key_to_string("a b"))   // "a b"
+// ```
+pub fn key_to_string(key: Str) -> Str
+    todo("toml-nv.tomlwrite.key_to_string")
+
+// Whether a tree can be written as a TOML document at all, and why
+// not.
+//
+// `to_string` runs this first, so calling it separately is for a
+// caller that wants to fail early — an editor validating as you type,
+// a builder checking a tree before it commits to it.  The three ways a
+// tree can be unwritable:
+//
+//   - the root is not a table (`WrongType`);
+//   - a table has the same key twice (`DuplicateKey`, with `line` and
+//     `first_line` both `-1`, because a tree has no lines);
+//   - a `TomlFloat` holds a `nan` or an `inf` a caller asked to be
+//     rejected — it does not, TOML has spellings for both, and this
+//     bullet is here to say so rather than to leave a reader guessing.
+//
+// A tree that came out of `tomlread.parse` always passes, which is
+// what makes the round trip total.
+//
+// ```novo
+// use tomlwrite
+// use tomlnode
+//
+// fn main() [io]
+//     match tomlwrite.check(TomlInt(1))
+//         Some(_) => println("not a document")
+//         None    => println("writable")
+// ```
+pub fn check(v: TomlValue) -> ?TomlError
+    todo("toml-nv.tomlwrite.check")

@@ -1,0 +1,218 @@
+// tomlcover_tests.nv — the rest of the public surface, one case each.
+//
+// RED ON PURPOSE, like every suite here: each assertion reaches `not
+// implemented: toml-nv.<module>.<fn>`.
+//
+// The three suites beside this one assert the DESIGN — the laws the
+// package is built around.  This one exists so that no public function
+// ships without a written expectation of what it answers, including
+// the ones whose behaviour is a single sentence.  Splitting them out
+// keeps the design suites readable rather than padding them with
+// twenty one-line cases.
+//
+// Everything here goes through `match` rather than `!`: the assertion
+// is usually about WHICH arm comes back, and the arm is the answer.
+
+use std.test
+use civil
+use tomlnode
+use tomlerror
+use tomlkeys
+use tomlread
+use tomlwrite
+use tomledit
+
+// `[db]\nhost = "localhost"\nport = 5432\n`, built by hand so these
+// cases do not depend on a parser.
+fn doc() -> TomlValue
+    TomlTable(pairs: [
+        TomlPair { key: "db", value: TomlTable(pairs: [
+            TomlPair { key: "host", value: TomlStr("localhost") },
+            TomlPair { key: "port", value: TomlInt(5432) }]) },
+        TomlPair { key: "debug", value: TomlBool(true) }])
+
+@test
+fn test_the_error_type_answers_position_and_renders_a_line() [io]
+    test.case("col_of is the byte column, 1-based")
+    test.assert(tomlerror.col_of(BadKey(3, 7, "a b")) == 7)
+
+    test.case("a reason with no position answers -1 in both")
+    test.assert(tomlerror.col_of(NoSuchKey("db.host")) == -1)
+    test.assert(tomlerror.line_of(NoSuchKey("db.host")) == -1)
+
+    test.case("render is the form an editor's error list parses")
+    test.assert(str.starts_with(tomlerror.render(BadKey(3, 7, "a b"), "novo.toml"),
+                                "novo.toml:3:7: "))
+
+    test.case("and a reason with no position renders without the colons")
+    test.assert(str.starts_with(tomlerror.render(NoSuchKey("db.host"), "novo.toml"),
+                                "novo.toml: "))
+
+@test
+fn test_the_remaining_typed_reads() [io]
+    test.case("bool_at")
+    match tomlkeys.bool_at(doc(), "debug")
+        Ok(b)  => test.assert(b)
+        Err(_) => test.fail("`debug` is true")
+
+    test.case("table_at gives the pairs in document order")
+    match tomlkeys.table_at(doc(), "db")
+        Ok(ps) =>
+            test.assert(list.len(ps) == 2)
+            test.assert(ps[0].key == "host")
+        Err(_) => test.fail("`db` is a table")
+
+    test.case("table_at on a scalar is WrongType")
+    match tomlkeys.table_at(doc(), "debug")
+        Err(WrongType(_, want, got)) =>
+            test.assert(want == "table")
+            test.assert(got == "boolean")
+        Err(_)                       => test.fail("wrong reason")
+        Ok(_)                        => test.fail("a boolean is not a table")
+
+@test
+fn test_the_optional_channel_falls_through_to_the_callers_default() [io]
+    // The whole point of the `?T` twins: "absent" and "the wrong
+    // shape" both mean "use the default", so a caller writes `??` and
+    // moves on.
+    test.case("opt_str present and absent")
+    test.assert((tomlkeys.opt_str(doc(), "db.host") ?? "127.0.0.1") == "localhost")
+    test.assert((tomlkeys.opt_str(doc(), "db.user") ?? "postgres") == "postgres")
+
+    test.case("opt_bool")
+    test.assert(tomlkeys.opt_bool(doc(), "debug") ?? false)
+    test.assert(not (tomlkeys.opt_bool(doc(), "verbose") ?? false))
+
+    test.case("opt_float widens an integer, as float_at does")
+    test.assert((tomlkeys.opt_float(doc(), "db.port") ?? 0.0) == 5432.0)
+
+    test.case("and answers None for a value of the wrong shape")
+    match tomlkeys.opt_float(doc(), "db.host")
+        Some(_) => test.fail("a string is not a float")
+        None    => test.assert(true)
+
+@test
+fn test_the_three_date_reads_that_are_not_the_offset_one() [io]
+    let day = civil.date(1979, 5, 27)
+    let tod = civil.time_of(7, 32, 0, 0)
+
+    test.case("local_datetime_at reads a local date-time")
+    match day
+        Ok(d)  =>
+            match tod
+                Ok(t)  =>
+                    let dt = civil.datetime(d, t)
+                    let src = TomlTable(pairs: [
+                        TomlPair { key: "at", value: TomlLocalDateTime(dt) },
+                        TomlPair { key: "day", value: TomlLocalDate(d) },
+                        TomlPair { key: "tod", value: TomlLocalTime(t) }])
+
+                    match tomlkeys.local_datetime_at(src, "at")
+                        Ok(_)  => test.assert(true)
+                        Err(_) => test.fail("`at` is a local date-time")
+
+                    test.case("date_at reads a local date")
+                    match tomlkeys.date_at(src, "day")
+                        Ok(_)  => test.assert(true)
+                        Err(_) => test.fail("`day` is a local date")
+
+                    test.case("time_at reads a local time")
+                    match tomlkeys.time_at(src, "tod")
+                        Ok(_)  => test.assert(true)
+                        Err(_) => test.fail("`tod` is a local time")
+
+                    test.case("and each refuses a value of the wrong form")
+                    match tomlkeys.date_at(src, "tod")
+                        Err(WrongType(_, _, _)) => test.assert(true)
+                        Err(_)                  => test.fail("wrong reason")
+                        Ok(_)                   => test.fail("a time is not a date")
+
+                Err(_) => test.fail("07:32:00 is a time")
+
+        Err(_) => test.fail("1979-05-27 is a date")
+
+@test
+fn test_parse_bytes_checks_utf8_rather_than_assuming_it() [io]
+    test.case("valid UTF-8 parses as the same document the Str form does")
+    match tomlread.parse_bytes(bytes.from_str("a = 1\n"))
+        Ok(v)  => test.assert(tomlnode.len(v) == 1)
+        Err(_) => test.fail("`a = 1` is a TOML document")
+
+    test.case("a byte that is not UTF-8 is UnexpectedByte, with a position")
+    // `a = "<0xFF>` — a lone 0xFF can start no UTF-8 sequence, so the
+    // parser has a byte to name and a place to name it, which is more
+    // use to a person than a decoder's "invalid sequence at 41822".
+    match tomlread.parse_bytes(bytes.from_byte_list([97, 32, 61, 32, 34, 255]))
+        Err(UnexpectedByte(_, _, b)) => test.assert(b == 255)
+        Err(_)                       => test.fail("wrong reason for a bad byte")
+        Ok(_)                        => test.fail("0xFF is not valid UTF-8")
+
+@test
+fn test_read_all_is_charged_what_the_stream_costs_and_not_more() [io]
+    // THE ONE THING THIS SUITE PROVES BEFORE ANY BODY EXISTS.
+    // `read_all<S: Read[e]>` binds the trait's effect parameter and
+    // its clause is `[e]`; the standard library declares
+    // `impl Read[] for Buffer`, so at this call site `[e]` substitutes
+    // to nothing and this function's row stays `[io]` — for the
+    // `println` inside `test.case`, and for nothing else.  A signature
+    // that had SPENT `[io, fs]` instead of binding would not compile
+    // here, which is the assertion, and the compiler makes it with
+    // every body still a `todo()`.
+    test.case("read_all over an in-memory Buffer")
+    let src = Buffer.from_str("a = 1\n")
+    match tomlread.read_all(src)
+        Ok(v)  => test.assert(tomlnode.len(v) == 1)
+        Err(_) => test.fail("`a = 1` is a TOML document")
+    src.drop()
+
+    test.case("read_all_with_depth takes the bound as a parameter")
+    let deep = Buffer.from_str("a = [[[1]]]\n")
+    match tomlread.read_all_with_depth(deep, 2)
+        Err(TooDeep(_, _, limit)) => test.assert(limit == 2)
+        Err(_)                    => test.fail("wrong reason")
+        Ok(_)                     => test.fail("three arrays exceed a bound of 2")
+    deep.drop()
+
+@test
+fn test_the_compact_style_differs_from_the_standard_one() [io]
+    test.case("compact turns off the blank line and the wrapping")
+    let c = tomlwrite.compact()
+    test.assert(not c.blank_before_table)
+    test.assert(c.array_width == 0)
+    test.assert(c.indent == 0)
+
+    test.case("the standard style wraps and separates")
+    let s = tomlwrite.standard()
+    test.assert(s.blank_before_table)
+    test.assert(s.array_width == 80)
+
+@test
+fn test_rendering_one_value_and_one_document_as_bytes() [io]
+    test.case("value_to_string quotes and escapes a string")
+    test.assert(tomlwrite.value_to_string(TomlStr("a\nb")) == "\"a\\nb\"")
+
+    test.case("and brackets an array")
+    test.assert(tomlwrite.value_to_string(TomlArray([TomlInt(1), TomlInt(2)]))
+                == "[1, 2]")
+
+    test.case("to_bytes is to_string's UTF-8, for a caller writing to a socket")
+    match tomlwrite.to_bytes(doc(), tomlwrite.standard())
+        Ok(b)  =>
+            match tomlwrite.to_string(doc(), tomlwrite.standard())
+                Ok(s)  => test.assert(bytes.to_str(b) == s)
+                Err(_) => test.fail("the document renders")
+        Err(_) => test.fail("the document renders")
+
+@test
+fn test_the_editing_documents_two_remaining_reads() [io]
+    test.case("value_of is the bridge to tomlkeys")
+    match tomledit.parse("[db]\nport = 5432\n")
+        Ok(d)  =>
+            match tomlkeys.int_at(tomledit.value_of(d), "db.port")
+                Ok(n)  => test.assert(n == 5432)
+                Err(_) => test.fail("`db.port` is 5432")
+
+            test.case("to_bytes is to_string's UTF-8")
+            test.assert(bytes.to_str(tomledit.to_bytes(d)) == tomledit.to_string(d))
+
+        Err(_) => test.fail("the fixture is a TOML document")

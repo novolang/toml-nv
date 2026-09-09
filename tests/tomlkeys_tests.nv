@@ -1,0 +1,226 @@
+// tomlkeys_tests.nv — the API suite for path access.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// toml-nv.tomlkeys.<fn>`.  What is asserted is the contract of the two
+// lookup channels and of the path language.
+//
+// The helpers below read a fixture that is known good.  A case whose
+// SUBJECT is a refusal matches on the `Result` in full instead — that
+// is the assertion, and a helper would swallow it.
+
+use std.test
+use tomlnode
+use tomlkeys
+
+// The integer at a path in a fixture that has one.  `-1` stands in
+// when it does not, so a broken fixture fails the assertion below it
+// rather than being reported as something about the fixture.
+fn int_of(v: TomlValue, path: Str) -> Int
+    match tomlkeys.int_at(v, path)
+        Ok(n)  => n
+        Err(_) => -1
+
+// The string at a path in a fixture that has one.
+fn str_of(v: TomlValue, path: Str) -> Str
+    match tomlkeys.str_at(v, path)
+        Ok(s)  => s
+        Err(_) => "«missing»"
+
+// A tree with one path set, for the cases about what `set` leaves
+// alone.  The tree unchanged stands in when the set fails, so the
+// assertion below reports what it was asserting.
+fn set_in(v: TomlValue, path: Str, value: TomlValue) -> TomlValue
+    match tomlkeys.set(v, path, value)
+        Ok(next) => next
+        Err(_)   => v
+
+// A tree with one path removed.
+fn removed(v: TomlValue, path: Str) -> TomlValue
+    match tomlkeys.remove(v, path)
+        Ok(next) => next
+        Err(_)   => v
+
+// `[db]\nhost = "localhost"\nport = 5432\n`, by hand.
+fn doc() -> TomlValue
+    TomlTable(pairs: [
+        TomlPair { key: "db", value: TomlTable(pairs: [
+            TomlPair { key: "host", value: TomlStr("localhost") },
+            TomlPair { key: "port", value: TomlInt(5432) }]) }])
+
+@test
+fn test_a_dotted_path_walks_tables() [io]
+    test.case("get reaches a nested key")
+    match tomlkeys.get(doc(), "db.port")
+        Ok(v)  => test.assert(tomlnode.type_name(v) == "integer")
+        Err(_) => test.fail("`db.port` is in the document")
+
+    test.case("has agrees with get")
+    test.assert(tomlkeys.has(doc(), "db.host"))
+    test.assert(not tomlkeys.has(doc(), "db.user"))
+
+    test.case("find is the ?T channel for the same walk")
+    match tomlkeys.find(doc(), "db.user")
+        Some(_) => test.fail("`db.user` is not in the document")
+        None    => test.assert(true)
+
+@test
+fn test_the_two_channels_answer_different_questions() [io]
+    // The reason both exist: a REQUIRED setting needs to tell "absent"
+    // from "the wrong shape", and an OPTIONAL one does not.
+    test.case("a missing key is NoSuchKey with the path the caller wrote")
+    match tomlkeys.int_at(doc(), "db.user")
+        Err(NoSuchKey(p)) => test.assert(p == "db.user")
+        Err(_)            => test.fail("wrong reason for a missing key")
+        Ok(_)             => test.fail("`db.user` is not in the document")
+
+    test.case("a key of the wrong type is WrongType, naming both")
+    match tomlkeys.int_at(doc(), "db.host")
+        Err(WrongType(p, want, got)) =>
+            test.assert(p == "db.host")
+            test.assert(want == "integer")
+            test.assert(got == "string")
+        Err(_)                       => test.fail("wrong reason for a type mismatch")
+        Ok(_)                        => test.fail("`db.host` is a string")
+
+    test.case("the ?T channel folds both into None")
+    match tomlkeys.opt_int(doc(), "db.host")
+        Some(_) => test.fail("`db.host` is not an integer")
+        None    => test.assert(true)
+    match tomlkeys.opt_int(doc(), "db.user")
+        Some(_) => test.fail("`db.user` is not there")
+        None    => test.assert(true)
+
+@test
+fn test_typed_reads_do_not_coerce_except_int_to_float() [io]
+    test.case("an integer read as a string is a refusal, not \"5432\"")
+    match tomlkeys.str_at(doc(), "db.port")
+        Err(WrongType(_, _, _)) => test.assert(true)
+        Err(_)                  => test.fail("wrong reason")
+        Ok(_)                   => test.fail("an integer is not a string")
+
+    test.case("a float read as an integer is a refusal even when integral")
+    let d = TomlTable(pairs: [TomlPair { key: "n", value: TomlFloat(1.0) }])
+    match tomlkeys.int_at(d, "n")
+        Err(WrongType(_, want, got)) =>
+            test.assert(want == "integer")
+            test.assert(got == "float")
+        Err(_)                       => test.fail("wrong reason")
+        Ok(_)                        => test.fail("`1.0` is a float literal, not an integer")
+
+    test.case("but an integer read as a float IS widened — the one asymmetry")
+    match tomlkeys.float_at(doc(), "db.port")
+        Ok(f)  => test.assert(f == 5432.0)
+        Err(_) => test.fail("`timeout = 30` in a seconds field is a round number")
+
+@test
+fn test_the_path_language_is_tomls_own() [io]
+    test.case("bare segments split on the dot")
+    match tomlkeys.path_segments("servers.alpha.port")
+        Ok(segs) =>
+            test.assert(list.len(segs) == 3)
+            test.assert(segs[1] == "alpha")
+        Err(_)   => test.fail("a bare dotted path is three segments")
+
+    test.case("a quoted segment may contain a dot")
+    match tomlkeys.path_segments("a.\"b.c\".d")
+        Ok(q)  =>
+            test.assert(list.len(q) == 3)
+            test.assert(q[1] == "b.c")
+        Err(_) => test.fail("`a.\"b.c\".d` is three segments, the middle one quoted")
+
+    test.case("path_of is the inverse and quotes what needs it")
+    test.assert(tomlkeys.path_of(["a", "b"]) == "a.b")
+    test.assert(tomlkeys.path_of(["a", "b.c"]) == "a.\"b.c\"")
+
+    test.case("an array index is NOT path syntax — `at` takes one instead")
+    let arr = TomlArray([TomlInt(10), TomlInt(20)])
+    match tomlkeys.at(arr, 1)
+        Some(v) => test.assert(tomlnode.equal(v, TomlInt(20)))
+        None    => test.fail("index 1 of a 2-item array exists")
+    match tomlkeys.at(arr, 2)
+        Some(_) => test.fail("index 2 of a 2-item array does not exist")
+        None    => test.assert(true)
+    match tomlkeys.at(arr, -1)
+        Some(_) => test.fail("a negative index is None, not the last item")
+        None    => test.assert(true)
+
+@test
+fn test_child_does_not_interpret_the_dot() [io]
+    test.case("a literal key containing a dot")
+    let d = TomlTable(pairs: [TomlPair { key: "a.b", value: TomlInt(1) }])
+    match tomlkeys.child(d, "a.b")
+        Some(v) => test.assert(tomlnode.equal(v, TomlInt(1)))
+        None    => test.fail("child takes the key whole")
+
+    test.case("and the path form does NOT find it")
+    match tomlkeys.find(d, "a.b")
+        Some(_) => test.fail("`a.b` as a path is two segments")
+        None    => test.assert(true)
+
+@test
+fn test_paths_lists_leaves_in_document_order() [io]
+    test.case("leaves only — a table's own path is not listed")
+    let ps = tomlkeys.paths(doc())
+    test.assert(list.len(ps) == 2)
+    test.assert(ps[0] == "db.host")
+    test.assert(ps[1] == "db.port")
+
+@test
+fn test_set_returns_a_new_tree_and_creates_intermediates() [io]
+    test.case("an existing key is replaced")
+    test.assert(int_of(set_in(doc(), "db.port", TomlInt(5433)), "db.port") == 5433)
+
+    test.case("the original is untouched — no [mutate] in this package")
+    test.assert(int_of(doc(), "db.port") == 5432)
+
+    test.case("a missing intermediate table is created")
+    test.assert(str_of(set_in(doc(), "log.level", TomlStr("warn")), "log.level")
+                == "warn")
+
+    test.case("an intermediate that is NOT a table is WrongType, not an overwrite")
+    match tomlkeys.set(doc(), "db.port.deeper", TomlInt(1))
+        Err(WrongType(_, _, _)) => test.assert(true)
+        Err(_)                  => test.fail("wrong reason")
+        Ok(_)                   => test.fail("setting through an integer would lose it")
+
+@test
+fn test_remove_refuses_a_key_that_was_not_there() [io]
+    test.case("removing a key that exists")
+    let next = removed(doc(), "db.port")
+    test.assert(not tomlkeys.has(next, "db.port"))
+    test.assert(tomlkeys.has(next, "db.host"))
+
+    test.case("the empty table is left behind rather than pruned")
+    test.assert(tomlkeys.has(removed(next, "db.host"), "db"))
+
+    test.case("removing a key that is not there is NoSuchKey")
+    match tomlkeys.remove(doc(), "db.user")
+        Err(NoSuchKey(p)) => test.assert(p == "db.user")
+        Err(_)            => test.fail("wrong reason")
+        Ok(_)             => test.fail("a remove that succeeds on a typo hides the typo")
+
+@test
+fn test_merge_is_key_by_key_for_tables_and_whole_for_everything_else() [io]
+    let base = TomlTable(pairs: [
+        TomlPair { key: "db", value: TomlTable(pairs: [
+            TomlPair { key: "host", value: TomlStr("a") },
+            TomlPair { key: "port", value: TomlInt(5432) }]) },
+        TomlPair { key: "hosts", value: TomlArray([TomlStr("a"), TomlStr("b")]) }])
+    let over = TomlTable(pairs: [
+        TomlPair { key: "db", value: TomlTable(pairs: [
+            TomlPair { key: "port", value: TomlInt(6000) }]) },
+        TomlPair { key: "hosts", value: TomlArray([TomlStr("c")]) }])
+    match tomlkeys.merge(base, over)
+        Ok(m)  =>
+            test.case("tables merge key by key")
+            test.assert(int_of(m, "db.port") == 6000)
+
+            test.case("a key only in base survives")
+            test.assert(str_of(m, "db.host") == "a")
+
+            test.case("an array REPLACES rather than appends — the caller decides")
+            match tomlkeys.array_at(m, "hosts")
+                Ok(hs) => test.assert(list.len(hs) == 1)
+                Err(_) => test.fail("`hosts` is an array in both trees")
+
+        Err(_) => test.fail("two tables always merge")

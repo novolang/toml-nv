@@ -1,0 +1,164 @@
+// tomlnode_tests.nv — the API suite for the value tree.
+//
+// RED ON PURPOSE, like every suite in this package: the bodies are
+// `todo()`, so each assertion reaches `not implemented:
+// toml-nv.tomlnode.<fn>`.  `novo test tests/tomlnode_tests.nv
+// --isolate` gives every `@test` its own process and prints which
+// function each one stopped at, which is the readable form of an
+// interface package's verdict.
+//
+// What is asserted is the CONTRACT.  The trees below are built by
+// hand rather than parsed, so the value-level laws can be pinned down
+// before a parser exists.
+
+use std.test
+use civil
+use tomlnode
+
+// A two-key table, built by hand.
+fn config() -> TomlValue
+    TomlTable(pairs: [
+        TomlPair { key: "host", value: TomlStr("localhost") },
+        TomlPair { key: "port", value: TomlInt(5432) }])
+
+@test
+fn test_type_of_names_every_arm() [io]
+    test.case("scalars")
+    match tomlnode.type_of(TomlStr("a"))
+        TypeStr => test.assert(true)
+        _       => test.fail("a string is TypeStr")
+
+    match tomlnode.type_of(TomlInt(1))
+        TypeInt => test.assert(true)
+        _       => test.fail("an integer is TypeInt")
+
+    match tomlnode.type_of(TomlFloat(1.5))
+        TypeFloat => test.assert(true)
+        _         => test.fail("a float is TypeFloat")
+
+    match tomlnode.type_of(TomlBool(true))
+        TypeBool => test.assert(true)
+        _        => test.fail("a boolean is TypeBool")
+
+    test.case("collections")
+    match tomlnode.type_of(TomlArray([]))
+        TypeArray => test.assert(true)
+        _         => test.fail("an array is TypeArray")
+
+    match tomlnode.type_of(config())
+        TypeTable => test.assert(true)
+        _         => test.fail("a table is TypeTable")
+
+@test
+fn test_the_four_date_arms_are_four_different_types() [io]
+    // The load-bearing claim of the value tree: TOML's four date-time
+    // forms are four DISTINCT arms, not one arm with optional parts.
+    // An offset date-time and a local one differ by a claim about UTC,
+    // and a writer that turned one into the other would move a
+    // timestamp.
+    let day = civil.date(1979, 5, 27)!
+    let tod = civil.time_of(7, 32, 0, 0)!
+    let dt = civil.datetime(day, tod)
+
+    test.case("offset date-time")
+    match tomlnode.type_of(TomlOffsetDateTime(dt, 0))
+        TypeOffsetDateTime => test.assert(true)
+        _                  => test.fail("an offset date-time is its own type")
+
+    test.case("local date-time is NOT an offset one with offset 0")
+    match tomlnode.type_of(TomlLocalDateTime(dt))
+        TypeLocalDateTime => test.assert(true)
+        _                 => test.fail("a local date-time is its own type")
+
+    test.case("local date")
+    match tomlnode.type_of(TomlLocalDate(day))
+        TypeLocalDate => test.assert(true)
+        _             => test.fail("a local date is its own type")
+
+    test.case("local time")
+    match tomlnode.type_of(TomlLocalTime(tod))
+        TypeLocalTime => test.assert(true)
+        _             => test.fail("a local time is its own type")
+
+    test.case("`Z` and `+00:00` are the same value, and both are offsets")
+    test.assert(tomlnode.equal(TomlOffsetDateTime(dt, 0),
+                               TomlOffsetDateTime(dt, 0)))
+
+    test.case("but an offset date-time never equals a local one")
+    test.assert(not tomlnode.equal(TomlOffsetDateTime(dt, 0),
+                                TomlLocalDateTime(dt)))
+
+@test
+fn test_type_name_uses_the_specification_spelling() [io]
+    test.case("the names an error message quotes")
+    test.assert(tomlnode.type_name(TomlStr("a")) == "string")
+    test.assert(tomlnode.type_name(TomlInt(1)) == "integer")
+    test.assert(tomlnode.type_name(TomlFloat(1.0)) == "float")
+    test.assert(tomlnode.type_name(TomlBool(true)) == "boolean")
+    test.assert(tomlnode.type_name(TomlArray([])) == "array")
+    test.assert(tomlnode.type_name(config()) == "table")
+
+@test
+fn test_len_counts_pairs_and_items_and_nothing_else() [io]
+    test.case("a table's pairs")
+    test.assert(tomlnode.len(config()) == 2)
+
+    test.case("an array's items")
+    test.assert(tomlnode.len(TomlArray([TomlInt(1), TomlInt(2)])) == 2)
+
+    test.case("a scalar has no length, and that is 0 rather than a panic")
+    test.assert(tomlnode.len(TomlInt(1)) == 0)
+
+    test.case("an empty table")
+    test.assert(tomlnode.len(tomlnode.empty_table()) == 0)
+
+@test
+fn test_keys_are_in_document_order() [io]
+    // A table is an ordered list of pairs and not a map, so that a
+    // document read and written again comes back in the order it was
+    // written in.
+    test.case("keys come back in the order the pairs were given")
+    let ks = tomlnode.keys(config())
+    test.assert(list.len(ks) == 2)
+    test.assert(ks[0] == "host")
+    test.assert(ks[1] == "port")
+
+    test.case("a scalar has no keys")
+    test.assert(list.len(tomlnode.keys(TomlInt(1))) == 0)
+
+@test
+fn test_table_keeps_the_order_it_was_given() [io]
+    test.case("table() does not sort")
+    let t = tomlnode.table([
+        TomlPair { key: "z", value: TomlInt(1) },
+        TomlPair { key: "a", value: TomlInt(2) }])
+    let ks = tomlnode.keys(t)
+    test.assert(ks[0] == "z")
+
+@test
+fn test_equal_is_order_sensitive_on_tables() [io]
+    // Documents, not maps: two files binding the same keys in a
+    // different order are different files, and a formatter that
+    // reordered them would be wrong.
+    test.case("same pairs, same order")
+    test.assert(tomlnode.equal(config(), config()))
+
+    test.case("same pairs, different order, NOT equal")
+    let swapped = TomlTable(pairs: [
+        TomlPair { key: "port", value: TomlInt(5432) },
+        TomlPair { key: "host", value: TomlStr("localhost") }])
+    test.assert(not tomlnode.equal(config(), swapped))
+
+    test.case("an integer and a float that read the same are not equal")
+    test.assert(not tomlnode.equal(TomlInt(1), TomlFloat(1.0)))
+
+@test
+fn test_depth_counts_nesting() [io]
+    test.case("a scalar is 0")
+    test.assert(tomlnode.depth(TomlInt(1)) == 0)
+
+    test.case("a flat table is 1")
+    test.assert(tomlnode.depth(config()) == 1)
+
+    test.case("an array of arrays is 2")
+    test.assert(tomlnode.depth(TomlArray([TomlArray([TomlInt(1)])])) == 2)

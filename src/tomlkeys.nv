@@ -1,0 +1,455 @@
+// tomlkeys.nv — reaching into a parsed document by key and by path.
+//
+// TWO CHANNELS, AND WHICH ONE TO USE
+//
+// Every lookup here comes in two forms and they answer different
+// questions:
+//
+//   `get`, `str_at`, `int_at`, …  ->  Result<T, TomlError>
+//   `find`, `opt_str`, `opt_int`, …  ->  ?T
+//
+// The `Result` form is for a caller reading a REQUIRED setting: it
+// distinguishes `NoSuchKey("db.port")` from `WrongType("db.port",
+// "integer", "string")`, which are two different sentences to show a
+// user and two different fixes.  The `?T` form is for an OPTIONAL one,
+// where "absent" and "the wrong shape" both mean "use the default" and
+// carrying a reason nobody reads is ceremony.  Offering only the first
+// makes optional settings verbose; offering only the second makes
+// required settings undebuggable.  Both, and the name says which.
+//
+// DOTTED PATHS ARE THE SAME LANGUAGE THE DOCUMENT USES
+//
+// `"servers.alpha.port"` walks tables the way `[servers.alpha]` builds
+// them, and the quoting rules are TOML's: `a."b.c"` is two segments
+// with a dot inside the second, `a.b.c` is three.  So a path a person
+// copies out of the file works, which is the point.  `path_segments`
+// is the split on its own, for a caller that would rather walk itself.
+//
+// An ARRAY index is not part of the path language.  `a.0` looks like
+// it should mean the first element and does not — `0` is a perfectly
+// legal bare key, TOML has no index syntax, and a path language that
+// invented one would make `a.0` ambiguous in a format where it is not.
+// `at` takes an index as an argument instead.
+
+use civil
+use tomlnode
+
+// The value at a dotted path, or why not.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     match tomlkeys.get(doc, "db.port")
+//         Ok(v)  => println(tomlnode.type_name(v))   // integer
+//         Err(e) => println(e.message())
+// ```
+pub fn get(v: TomlValue, path: Str) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlkeys.get")
+
+// The value at a dotted path, or `None`.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     match tomlkeys.find(doc, "db.host")
+//         Some(_) => println("set")
+//         None    => println("unset")
+// ```
+pub fn find(v: TomlValue, path: Str) -> ?TomlValue
+    todo("toml-nv.tomlkeys.find")
+
+// Whether a path resolves.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     println("${tomlkeys.has(doc, "db.port")}")     // true
+// ```
+pub fn has(v: TomlValue, path: Str) -> Bool
+    todo("toml-nv.tomlkeys.has")
+
+// One key of one table, with no path walking at all.
+//
+// The primitive `get` is written in terms of, and the call for a
+// caller whose key contains a dot it does not want interpreted.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("\"a.b\" = 1\n")!
+//     match tomlkeys.child(doc, "a.b")
+//         Some(_) => println("found the literal key")
+//         None    => println("no")
+// ```
+pub fn child(v: TomlValue, key: Str) -> ?TomlValue
+    todo("toml-nv.tomlkeys.child")
+
+// One element of an array, by 0-based index.
+//
+// `None` past the end, `None` for a negative index, and `None` for a
+// value that is not an array — three absences that a caller indexing
+// an array handles the same way.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("a = [10, 20]\n")!
+//     let arr = tomlkeys.get(doc, "a")!
+//     match tomlkeys.at(arr, 1)
+//         Some(_) => println("20 is there")
+//         None    => println("no")
+// ```
+pub fn at(v: TomlValue, index: Int) -> ?TomlValue
+    todo("toml-nv.tomlkeys.at")
+
+// A dotted path split into its segments, with TOML's quoting applied.
+//
+// `"a.\"b.c\".d"` is `["a", "b.c", "d"]`.  A malformed path — an
+// unclosed quote, an empty segment — is `BadKey` with the column
+// within the PATH, because there is no document position to give.
+//
+// ```novo
+// use tomlkeys
+//
+// fn main() [io]
+//     let segs = tomlkeys.path_segments("servers.alpha.port")!
+//     println("${list.len(segs)}")              // 3
+// ```
+pub fn path_segments(path: Str) -> Result<[Str], TomlError>
+    todo("toml-nv.tomlkeys.path_segments")
+
+// Segments joined back into a dotted path, quoting the ones that need
+// it.
+//
+// The inverse of `path_segments`, and the function an error message
+// uses to name where it was: a segment containing a dot, a space or a
+// quote comes back quoted and escaped, so the result is a path
+// `path_segments` accepts and a person can paste.
+//
+// ```novo
+// use tomlkeys
+//
+// fn main() [io]
+//     println(tomlkeys.path_of(["a", "b.c"]))   // a."b.c"
+// ```
+pub fn path_of(segments: [Str]) -> Str
+    todo("toml-nv.tomlkeys.path_of")
+
+// Every path in a document, depth first, in document order.
+//
+// Leaves only: a table's own path is not listed, its keys' are.  It is
+// what a `--dump` flag prints, what a schema check walks, and what a
+// diff between two config files compares.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     println(list.join(tomlkeys.paths(doc), " "))   // db.port
+// ```
+pub fn paths(v: TomlValue) -> [Str]
+    todo("toml-nv.tomlkeys.paths")
+
+// The string at a path, or why not.
+//
+// `WrongType` when the path resolves to something else — the value is
+// NOT coerced.  A `port = 8080` read as a string is a mistake in the
+// caller or in the file, and returning `"8080"` would hide which.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nhost = \"localhost\"\n")!
+//     println(tomlkeys.str_at(doc, "db.host")!)      // localhost
+// ```
+pub fn str_at(v: TomlValue, path: Str) -> Result<Str, TomlError>
+    todo("toml-nv.tomlkeys.str_at")
+
+// The integer at a path, or why not.
+//
+// A `TomlFloat` is `WrongType` even when it is integral: `1.0` and `1`
+// are different literals in TOML and a config file that wrote the
+// first meant the first.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("port = 8080\n")!
+//     println("${tomlkeys.int_at(doc, "port")!}")    // 8080
+// ```
+pub fn int_at(v: TomlValue, path: Str) -> Result<Int, TomlError>
+    todo("toml-nv.tomlkeys.int_at")
+
+// The float at a path, or why not.
+//
+// A `TomlInt` IS accepted here and widened, which is the one asymmetry
+// in this module and it is deliberate: `timeout = 30` in a field
+// documented as seconds-with-fractions is a person writing a round
+// number, not a type error, and every TOML library in the world
+// accepts it.  `int_at` refusing a float is the other direction, where
+// the narrowing would lose something.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("timeout = 30\n")!
+//     println("${tomlkeys.float_at(doc, "timeout")!}")   // 30
+// ```
+pub fn float_at(v: TomlValue, path: Str) -> Result<Float, TomlError>
+    todo("toml-nv.tomlkeys.float_at")
+
+// The boolean at a path, or why not.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("debug = true\n")!
+//     println("${tomlkeys.bool_at(doc, "debug")!}")  // true
+// ```
+pub fn bool_at(v: TomlValue, path: Str) -> Result<Bool, TomlError>
+    todo("toml-nv.tomlkeys.bool_at")
+
+// The array at a path, as its items.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("ports = [80, 443]\n")!
+//     println("${list.len(tomlkeys.array_at(doc, "ports")!)}")   // 2
+// ```
+pub fn array_at(v: TomlValue, path: Str) -> Result<[TomlValue], TomlError>
+    todo("toml-nv.tomlkeys.array_at")
+
+// The table at a path, as its pairs in document order.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     println("${list.len(tomlkeys.table_at(doc, "db")!)}")      // 1
+// ```
+pub fn table_at(v: TomlValue, path: Str) -> Result<[TomlPair], TomlError>
+    todo("toml-nv.tomlkeys.table_at")
+
+// The string at a path, or `None`.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\n")!
+//     println(tomlkeys.opt_str(doc, "db.host") ?? "127.0.0.1")
+// ```
+pub fn opt_str(v: TomlValue, path: Str) -> ?Str
+    todo("toml-nv.tomlkeys.opt_str")
+
+// The integer at a path, or `None`.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\n")!
+//     println("${tomlkeys.opt_int(doc, "db.port") ?? 5432}")
+// ```
+pub fn opt_int(v: TomlValue, path: Str) -> ?Int
+    todo("toml-nv.tomlkeys.opt_int")
+
+// The float at a path, or `None`.  Widens an integer, as `float_at`
+// does.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("timeout = 30\n")!
+//     println("${tomlkeys.opt_float(doc, "timeout") ?? 5.0}")
+// ```
+pub fn opt_float(v: TomlValue, path: Str) -> ?Float
+    todo("toml-nv.tomlkeys.opt_float")
+
+// The boolean at a path, or `None`.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[log]\n")!
+//     println("${tomlkeys.opt_bool(doc, "log.debug") ?? false}")
+// ```
+pub fn opt_bool(v: TomlValue, path: Str) -> ?Bool
+    todo("toml-nv.tomlkeys.opt_bool")
+
+// The offset date-time at a path: the civil parts and minutes east of
+// UTC.
+//
+// Only `TomlOffsetDateTime` answers.  A local date-time is
+// `WrongType`, because a caller that asked for an offset needs one and
+// a package that supplied `0` would have invented UTC.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("at = 1979-05-27T07:32:00Z\n")!
+//     let (_, off) = tomlkeys.offset_datetime_at(doc, "at")!
+//     println("${off}")                         // 0
+// ```
+pub fn offset_datetime_at(v: TomlValue, path: Str) -> Result<(civil.CivilDateTime, Int), TomlError>
+    todo("toml-nv.tomlkeys.offset_datetime_at")
+
+// The local date-time at a path.
+//
+// Only `TomlLocalDateTime` answers; an offset date-time is
+// `WrongType`, because dropping the offset silently is how a
+// timestamp moves by two hours between one program and the next.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("at = 1979-05-27T07:32:00\n")!
+//     let _ = tomlkeys.local_datetime_at(doc, "at")!
+//     println("ok")
+// ```
+pub fn local_datetime_at(v: TomlValue, path: Str) -> Result<civil.CivilDateTime, TomlError>
+    todo("toml-nv.tomlkeys.local_datetime_at")
+
+// The local date at a path.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("day = 1979-05-27\n")!
+//     let _ = tomlkeys.date_at(doc, "day")!
+//     println("ok")
+// ```
+pub fn date_at(v: TomlValue, path: Str) -> Result<civil.CivilDate, TomlError>
+    todo("toml-nv.tomlkeys.date_at")
+
+// The local time at a path.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("at = 07:32:00\n")!
+//     let _ = tomlkeys.time_at(doc, "at")!
+//     println("ok")
+// ```
+pub fn time_at(v: TomlValue, path: Str) -> Result<civil.CivilTime, TomlError>
+    todo("toml-nv.tomlkeys.time_at")
+
+// A copy of the document with the value at a path replaced or added.
+//
+// A NEW tree: `[mutate]` is a host effect and this package has none,
+// so nothing here changes a value in place.  Missing intermediate
+// tables are created, in the order the path names them, and appended
+// at the end of their parent.  A path whose intermediate segment
+// resolves to a NON-table is `WrongType` rather than an overwrite,
+// because silently replacing `a = 1` when told to set `a.b` is how a
+// configuration loses a setting.
+//
+// It is here for the tools that write config files — an installer, a
+// `novo pkg` subcommand, a migration.  A tool that wants the comments
+// back too wants `tomledit` instead; this is the value-level set, and
+// what comes out of `tomlwrite.to_string` after it is a canonical
+// document with the old file's formatting gone.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+// use tomlnode
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     let next = tomlkeys.set(doc, "db.port", TomlInt(5433))!
+//     println("${tomlkeys.int_at(next, "db.port")!}")    // 5433
+// ```
+pub fn set(v: TomlValue, path: Str, value: TomlValue) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlkeys.set")
+
+// A copy of the document with the value at a path removed.
+//
+// `NoSuchKey` when it was not there — a remove that silently succeeds
+// on a typo is a remove that never tells you about the typo.  Empty
+// tables left behind are left behind: pruning them would delete a
+// `[section]` header a person wrote on purpose.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let doc = tomlread.parse("[db]\nport = 5432\n")!
+//     let next = tomlkeys.remove(doc, "db.port")!
+//     println("${tomlkeys.has(next, "db.port")}")        // false
+// ```
+pub fn remove(v: TomlValue, path: Str) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlkeys.remove")
+
+// A copy of `base` with every leaf of `overlay` written over it.
+//
+// Tables merge key by key, and everything else replaces whole — an
+// array in `overlay` replaces the array in `base` rather than
+// appending to it, because "the user's list of hosts plus the
+// default's" is a decision the caller makes and not one a merge should
+// make for them.  Keys only in `base` survive; keys only in `overlay`
+// are appended in `overlay`'s order.
+//
+// This is the function a layered configuration is written with:
+// defaults, then the system file, then the user's, then the
+// environment's.  `config-nv` is the package that will do the layering
+// with files in it; this is the arithmetic underneath, and it is here
+// because it belongs to the value tree rather than to the reading of
+// files.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     let base = tomlread.parse("[db]\nport = 5432\nhost = \"a\"\n")!
+//     let over = tomlread.parse("[db]\nport = 6000\n")!
+//     let m = tomlkeys.merge(base, over)!
+//     println("${tomlkeys.int_at(m, "db.port")!}")       // 6000
+//     println(tomlkeys.str_at(m, "db.host")!)            // a
+// ```
+pub fn merge(base: TomlValue, overlay: TomlValue) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlkeys.merge")

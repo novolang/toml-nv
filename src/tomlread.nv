@@ -1,0 +1,216 @@
+// tomlread.nv — the parser: text in, a value tree or a position out.
+//
+// WHY THERE IS NO FEED-AND-DRAIN READER HERE
+//
+// csv-nv has one, and this package deliberately does not, because the
+// two formats differ in the one way that decides it: a CSV record is
+// complete at a separator and can be handed back while the rest of the
+// file is still arriving, and a TOML document is not complete until its
+// last line, because a `[table]` header three thousand lines down can
+// still add keys to a table defined at the top.  A chunk-at-a-time
+// TOML reader would have to buffer the whole document anyway and would
+// only be lying about it in its type.  So the shape is honest: `parse`
+// takes the text, and `read_all` is the one function that meets a
+// stream — it drains it first and then parses, which is what any
+// correct implementation would do underneath a streaming facade.
+//
+// That is a real cost and it is worth naming: a caller with a 200 MB
+// TOML file holds all of it.  Nobody has a 200 MB TOML file, and the
+// format is the reason.
+//
+// HOW THE PACKAGE STAYS `core` WITH A STREAM IN ITS API
+//
+//     pub fn read_all<S: Read[e]>(src: S) -> Result<TomlValue, TomlError> [e]
+//
+// `S: Read[e]` binds the effect parameter of the standard library's
+// `Read` trait and the clause uses it (SPEC § 5.6), so the row means
+// "whatever the impl behind `S` supplies": `[io, fs]` for a file,
+// nothing at all for an in-memory buffer.  This package has not spent
+// an effect, it has said "whatever you hand me", and the impl that
+// supplies the cost is declared where the host is.
+//
+// HOW THIS DIFFERS FROM `std.toml`
+//
+// `std.toml` is the toolchain's own manifest reader.  It parses a
+// subset — scalars, `[section]` headers, inline arrays of homogeneous
+// scalars — onto the JSON value tree, and its whole error channel is
+// `?T`: a document that fails gives you `None`, with no reason and no
+// position, and `read_file` folds "could not be read" and "is not
+// TOML" into that same `None`.  For reading `novo.toml` that is the
+// right size.  For a program whose USER writes the file it is not: the
+// user needs to be told which line, dates are not in the subset, and
+// arrays of tables are not either.  This package is the whole of TOML
+// 1.0.0 with positions on every refusal, and `std.toml` is not
+// something it replaces so much as the toolchain-internal case it
+// grew out of.
+
+use tomlnode
+use tomlerror
+
+// Parse a whole TOML document.
+//
+// The result is always a `TomlTable` — a TOML document is a table,
+// and an empty document is an empty one rather than an error, so `""`
+// is `Ok`.
+//
+// Nesting is bounded at `default_depth`; `parse_with_depth` is the
+// same function with the bound as a parameter.
+//
+// ```novo
+// use tomlread
+// use tomlkeys
+//
+// fn main() [io]
+//     match tomlread.parse("port = 8080\n")
+//         Ok(doc) => println("${tomlkeys.int_at(doc, "port")!}")   // 8080
+//         Err(e)  => println(e.message())
+// ```
+pub fn parse(text: Str) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlread.parse")
+
+// `parse` with the nesting bound named.
+//
+// The bound exists because a recursive-descent parser handed
+// `a = [[[[[[[…` should refuse at a depth it chose rather than
+// overflow a stack it does not own, and because an embedded consumer
+// with a 4 KiB stack needs the number to be its own.  Exceeding it is
+// `TooDeep`, which carries the limit so the message can say what was
+// exceeded.
+//
+// ```novo
+// use tomlread
+//
+// fn main() [io]
+//     match tomlread.parse_with_depth("a = [[1]]\n", 2)
+//         Ok(_)  => println("fits")
+//         Err(_) => println("too deep")
+// ```
+pub fn parse_with_depth(text: Str, max_depth: Int) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlread.parse_with_depth")
+
+// The nesting bound `parse` uses: 64.
+//
+// Deep enough that no document a person wrote reaches it, shallow
+// enough that the recursion fits a small stack.  Named rather than
+// written into the docs as a number so that a caller can compare
+// against it.
+//
+// ```novo
+// use tomlread
+//
+// fn main() [io]
+//     println("${tomlread.default_depth()}")    // 64
+// ```
+pub fn default_depth() -> Int
+    todo("toml-nv.tomlread.default_depth")
+
+// Parse the bytes of a document.
+//
+// The same parser: TOML documents are UTF-8 by specification, and this
+// checks that rather than assuming it — a `Bytes` that is not valid
+// UTF-8 is `UnexpectedByte` at the offending byte, with a position,
+// which is more use than a decoder's "invalid sequence at 41822".
+//
+// ```novo
+// use tomlread
+//
+// fn main() [io]
+//     match tomlread.parse_bytes(bytes.from_str("a = 1\n"))
+//         Ok(_)  => println("ok")
+//         Err(_) => println("not toml")
+// ```
+pub fn parse_bytes(input: Bytes) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlread.parse_bytes")
+
+// Parse a single TOML VALUE — the right-hand side of a `=`, with no
+// key and no document around it.
+//
+// It is here for the callers that have one: a command line taking
+// `--set timeout=30.5`, a test fixture, an editor evaluating the
+// expression under the cursor.  Trailing content is `BadValue` rather
+// than ignored, because a caller that meant `[1, 2] junk` wants to
+// know.
+//
+// ```novo
+// use tomlread
+// use tomlnode
+//
+// fn main() [io]
+//     match tomlread.parse_value("1979-05-27T07:32:00Z")
+//         Ok(v)  => println(tomlnode.type_name(v))   // offset date-time
+//         Err(_) => println("no")
+// ```
+pub fn parse_value(text: Str) -> Result<TomlValue, TomlError>
+    todo("toml-nv.tomlread.parse_value")
+
+// Read a whole stream and parse what it held, charged exactly what the
+// stream costs.
+//
+// THE LOAD-BEARING SIGNATURE OF THIS MODULE.  `S: Read[e]` binds the
+// effect parameter of `Read` and the clause is `[e]`, so this package
+// is charged nothing and the caller is charged what its own impl
+// declared (SPEC § 5.6, and `docs/publishing.md` § Design).  A `File`
+// costs the caller `[io, fs]`; an in-memory `Buffer` costs nothing;
+// `toml-nv` remains `core` either way.
+//
+// The stream's own failure is carried through as `Transport`, so a
+// caller can still tell a truncated read from a malformed document —
+// two different fixes, and a package that flattened them to one string
+// would have taken the distinction away.
+//
+// ```novo
+// use tomlread
+//
+// fn load(path: Str) -> Result<TomlValue, TomlError> [io, fs]
+//     match File.open_read(path)
+//         None    => Err(Transport(IoNotFound))
+//         Some(f) =>
+//             let h: File = f
+//             tomlread.read_all(h)
+//
+// fn main() [io, fs]
+//     match load("config.toml")
+//         Ok(_)  => println("loaded")
+//         Err(e) => println(tomlerror.render(e, "config.toml"))
+// ```
+pub fn read_all<S: Read[e]>(src: S) -> Result<TomlValue, TomlError> [e]
+    todo("toml-nv.tomlread.read_all")
+
+// `read_all` with the nesting bound named.
+//
+// ```novo
+// use tomlread
+//
+// fn load(f: File) -> Result<TomlValue, TomlError> [io, fs]
+//     tomlread.read_all_with_depth(f, 16)
+//
+// fn main() [io, fs]
+//     match File.open_read("config.toml")
+//         None    => println("no such file")
+//         Some(f) =>
+//             let h: File = f
+//             match load(h)
+//                 Ok(_)  => println("loaded")
+//                 Err(_) => println("bad document")
+// ```
+pub fn read_all_with_depth<S: Read[e]>(src: S, max_depth: Int) -> Result<TomlValue, TomlError> [e]
+    todo("toml-nv.tomlread.read_all_with_depth")
+
+// The line and column a parse would stop at, for a caller that wants
+// to check a document without keeping the tree.
+//
+// `None` when the document parses.  It is `parse` with the `Ok` arm
+// dropped, and it exists because a linter, a pre-commit hook and an
+// editor's save handler all ask exactly this question and none of them
+// wants the allocation.
+//
+// ```novo
+// use tomlread
+//
+// fn main() [io]
+//     match tomlread.check("a = = 1\n")
+//         Some(e) => println(e.message())
+//         None    => println("valid")
+// ```
+pub fn check(text: Str) -> ?TomlError
+    todo("toml-nv.tomlread.check")

@@ -1,0 +1,327 @@
+// tomlread_tests.nv — the API suite for the parser and the two
+// writers.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// toml-nv.<module>.<fn>`.  What is asserted is the grammar this
+// package claims to accept, the position every refusal carries, and
+// the two round-trip laws.
+//
+// The four helpers below unwrap a fixture that is known good, once
+// each, so that the cases read as the assertions they are rather than
+// as a column of `!`.  A case whose SUBJECT is a refusal always
+// matches on the `Result` in full — that is the assertion, and a
+// helper would swallow it.
+
+use std.test
+use tomlnode
+use tomlerror
+use tomlkeys
+use tomlread
+use tomlwrite
+use tomledit
+
+// A document that is known to parse.  An empty table stands in when it
+// does not, so a broken fixture fails the assertion below it rather
+// than stopping the case with a reason about the fixture.
+fn parsed(src: Str) -> TomlValue
+    match tomlread.parse(src)
+        Ok(v)  => v
+        Err(_) => tomlnode.empty_table()
+
+// The type name at a path, for the cases that assert which arm a
+// literal became.
+fn kind_at(doc: TomlValue, path: Str) -> Str
+    match tomlkeys.get(doc, path)
+        Ok(v)  => tomlnode.type_name(v)
+        Err(_) => "missing"
+
+// An editing document that is known to parse.  An empty document
+// stands in when it does not, for the same reason `parsed` returns an
+// empty table: the case below is the assertion, and a fixture that
+// stopped the run would report the fixture instead of it.
+fn edited(src: Str) -> TomlEdit
+    match tomledit.parse(src)
+        Ok(d)  => d
+        Err(_) => TomlEdit {
+            text: "", original: "", value: tomlnode.empty_table(),
+            spans: [], paths: [] }
+
+// An editing document with one value set, for the cases about what a
+// `set` leaves alone.  An unchanged document stands in when the set
+// fails.
+fn edited_set(src: Str, path: Str, value: TomlValue) -> TomlEdit
+    match tomledit.set(edited(src), path, value)
+        Ok(d)  => d
+        Err(_) => edited(src)
+
+// A document rendered by the canonical writer.
+fn rendered(doc: TomlValue) -> Str
+    match tomlwrite.to_string(doc, tomlwrite.standard())
+        Ok(s)  => s
+        Err(_) => "«unwritable»"
+
+@test
+fn test_a_document_is_a_table_and_an_empty_one_is_valid() [io]
+    test.case("the empty document parses to an empty table")
+    let empty = parsed("")
+    test.assert(tomlnode.type_name(empty) == "table")
+    test.assert(tomlnode.len(empty) == 0)
+
+    test.case("a comment-only document is also empty")
+    test.assert(tomlnode.len(parsed("# nothing here\n")) == 0)
+
+@test
+fn test_every_scalar_form_parses_to_its_own_arm() [io]
+    let doc = parsed("s = \"a\"\ni = 8080\nf = 1.5\nb = true\ninf = inf\n")
+
+    test.case("string, integer, float, boolean")
+    test.assert(kind_at(doc, "s") == "string")
+    test.assert(kind_at(doc, "i") == "integer")
+    test.assert(kind_at(doc, "f") == "float")
+    test.assert(kind_at(doc, "b") == "boolean")
+
+    test.case("`inf` is a float value, not a refusal")
+    test.assert(kind_at(doc, "inf") == "float")
+
+@test
+fn test_the_four_date_forms_land_on_calendar_nvs_types() [io]
+    // The mapping the README documents, asserted: which TOML spelling
+    // becomes which arm.
+    let doc = parsed(
+        "odt = 1979-05-27T07:32:00Z\n" +
+        "ldt = 1979-05-27T07:32:00\n" +
+        "ld  = 1979-05-27\n" +
+        "lt  = 07:32:00\n")
+
+    test.case("offset date-time")
+    test.assert(kind_at(doc, "odt") == "offset date-time")
+    match tomlkeys.offset_datetime_at(doc, "odt")
+        Ok((_, off)) => test.assert(off == 0)
+        Err(_)       => test.fail("`odt` carries an offset")
+
+    test.case("local date-time — and asking it for an offset is a refusal")
+    test.assert(kind_at(doc, "ldt") == "local date-time")
+    match tomlkeys.offset_datetime_at(doc, "ldt")
+        Err(WrongType(_, _, _)) => test.assert(true)
+        Err(_)                  => test.fail("wrong reason")
+        Ok(_)                   => test.fail("a local date-time has no offset to invent")
+
+    test.case("local date and local time")
+    test.assert(kind_at(doc, "ld") == "local date")
+    test.assert(kind_at(doc, "lt") == "local time")
+
+    test.case("a non-zero offset is minutes east of UTC")
+    let plus = parsed("at = 1979-05-27T07:32:00+02:00\n")
+    match tomlkeys.offset_datetime_at(plus, "at")
+        Ok((_, m)) => test.assert(m == 120)
+        Err(_)     => test.fail("`+02:00` is an offset")
+
+@test
+fn test_arrays_of_tables_and_inline_tables_both_land_on_TomlTable() [io]
+    test.case("[[array.of.tables]]")
+    match tomlkeys.array_at(parsed("[[p]]\nn = 1\n\n[[p]]\nn = 2\n"), "p")
+        Ok(ps) =>
+            test.assert(list.len(ps) == 2)
+            test.assert(tomlnode.type_name(ps[0]) == "table")
+        Err(_) => test.fail("`[[p]]` twice is an array of two tables")
+
+    test.case("an inline table is the same value, spelled differently")
+    match tomlkeys.int_at(parsed("p = { n = 1 }\n"), "p.n")
+        Ok(n)  => test.assert(n == 1)
+        Err(_) => test.fail("an inline table binds `n` the same way a header does")
+
+@test
+fn test_every_refusal_carries_a_position() [io]
+    // The reason `TomlError` puts the line and column inside the
+    // variant: a TOML file is a thing a person edited, and "line 2,
+    // column 5" is the answer they need.
+    test.case("an unterminated string points at the OPENING quote")
+    match tomlread.parse("a = 1\nb = \"oops\n")
+        Err(UnterminatedString(l, c)) =>
+            test.assert(l == 2)
+            test.assert(c == 5)
+        Err(_)                        => test.fail("wrong reason for an unclosed string")
+        Ok(_)                         => test.fail("`\"oops` is not a closed string")
+
+    test.case("a duplicate key names both definitions")
+    match tomlread.parse("a = 1\na = 2\n")
+        Err(DuplicateKey(l, _, k, first)) =>
+            test.assert(l == 2)
+            test.assert(k == "a")
+            test.assert(first == 1)
+        Err(_)                            => test.fail("wrong reason for a duplicate key")
+        Ok(_)                             => test.fail("TOML forbids defining a key twice")
+
+    test.case("an integer past the 64-bit range is BadInteger, not a wrap")
+    match tomlread.parse("n = 99999999999999999999\n")
+        Err(BadInteger(_, _, t)) => test.assert(t == "99999999999999999999")
+        Err(_)                   => test.fail("wrong reason")
+        Ok(_)                    => test.fail("TOML integers are signed 64-bit")
+
+    test.case("an inline table may not span a line, and gets its own arm")
+    match tomlread.parse("t = { a = 1,\n      b = 2 }\n")
+        Err(UnterminatedInline(_, _)) => test.assert(true)
+        Err(_)                        => test.fail("wrong reason")
+        Ok(_)                         => test.fail("an inline table is one line")
+
+    test.case("a date that does not exist is BadDateTime with the literal")
+    match tomlread.parse("d = 1979-02-30\n")
+        Err(BadDateTime(_, _, t, _)) => test.assert(t == "1979-02-30")
+        Err(_)                       => test.fail("wrong reason")
+        Ok(_)                        => test.fail("February has no 30th")
+
+@test
+fn test_nesting_is_bounded_rather_than_overflowing_a_stack() [io]
+    test.case("default_depth is a number a caller can compare against")
+    test.assert(tomlread.default_depth() == 64)
+
+    test.case("exceeding a named bound is TooDeep, carrying the bound")
+    match tomlread.parse_with_depth("a = [[[1]]]\n", 2)
+        Err(TooDeep(_, _, limit)) => test.assert(limit == 2)
+        Err(_)                    => test.fail("wrong reason")
+        Ok(_)                     => test.fail("three arrays exceed a bound of 2")
+
+@test
+fn test_check_is_parse_with_the_ok_arm_dropped() [io]
+    test.case("a valid document has no error")
+    match tomlread.check("a = 1\n")
+        Some(_) => test.fail("`a = 1` is valid TOML")
+        None    => test.assert(true)
+
+    test.case("an invalid one reports the same position parse would")
+    match tomlread.check("a = = 1\n")
+        Some(e) => test.assert(tomlerror.line_of(e) != 0)
+        None    => test.fail("`a = = 1` is not valid TOML")
+
+@test
+fn test_parse_value_takes_a_right_hand_side_and_refuses_trailing_junk() [io]
+    test.case("one value, no key, no document")
+    match tomlread.parse_value("30.5")
+        Ok(v)  => test.assert(tomlnode.equal(v, TomlFloat(30.5)))
+        Err(_) => test.fail("`30.5` is a TOML float")
+
+    test.case("a date literal on its own")
+    match tomlread.parse_value("1979-05-27")
+        Ok(v)  => test.assert(tomlnode.type_name(v) == "local date")
+        Err(_) => test.fail("`1979-05-27` is a TOML local date")
+
+    test.case("trailing content is refused rather than ignored")
+    match tomlread.parse_value("[1, 2] junk")
+        Err(BadValue(_, _, _)) => test.assert(true)
+        Err(_)                 => test.fail("wrong reason")
+        Ok(_)                  => test.fail("a caller that wrote junk wants to know")
+
+@test
+fn test_the_canonical_writer_is_a_function_of_the_tree_alone() [io]
+    let doc = parsed("# a comment\nport = 8080\n")
+
+    test.case("the same tree always renders the same bytes")
+    let a = rendered(doc)
+    test.assert(a == rendered(doc))
+
+    test.case("and the comment is GONE — this writer preserves nothing")
+    test.assert(not str.contains(a, "a comment"))
+
+    test.case("what it writes, it can read back")
+    test.assert(tomlnode.equal(parsed(a), doc))
+
+    test.case("the output always ends in exactly one newline")
+    test.assert(str.ends_with(a, "\n"))
+    test.assert(not str.ends_with(a, "\n\n"))
+
+@test
+fn test_the_writer_refuses_a_tree_that_is_not_a_document() [io]
+    test.case("the root must be a table")
+    match tomlwrite.to_string(TomlInt(1), tomlwrite.standard())
+        Err(WrongType(p, want, _)) =>
+            test.assert(p == "")
+            test.assert(want == "table")
+        Err(_)                     => test.fail("wrong reason")
+        Ok(_)                      => test.fail("no TOML document has an integer at its top level")
+
+    test.case("check is the same verdict without rendering")
+    match tomlwrite.check(TomlInt(1))
+        Some(_) => test.assert(true)
+        None    => test.fail("an integer is not a document")
+
+    test.case("a tree that came out of parse always passes")
+    match tomlwrite.check(parsed("a = 1\n"))
+        Some(_) => test.fail("a parsed document is always writable")
+        None    => test.assert(true)
+
+@test
+fn test_a_key_is_bare_when_toml_allows_it_and_quoted_when_it_does_not() [io]
+    test.case("bare")
+    test.assert(tomlwrite.key_to_string("a-b_1") == "a-b_1")
+
+    test.case("quoted")
+    test.assert(tomlwrite.key_to_string("a b") == "\"a b\"")
+    test.assert(tomlwrite.key_to_string("") == "\"\"")
+
+@test
+fn test_the_editing_document_gives_back_the_bytes_it_was_given() [io]
+    // The load-bearing law of `tomledit`, and the whole reason the
+    // module is separate from `tomlwrite`.
+    let src = "# a comment\n\n[db]\nport   = 5432   # inline\n"
+
+    test.case("to_string(parse(s)) == s, byte for byte")
+    test.assert(tomledit.to_string(edited(src)) == src)
+
+    test.case("an untouched document reports itself unchanged")
+    test.assert(tomledit.is_unchanged(edited(src)))
+
+@test
+fn test_setting_a_value_rewrites_that_span_and_nothing_else() [io]
+    let src = "# a comment\n\n[db]\nport   = 5432   # inline\n"
+    let out = tomledit.to_string(edited_set(src, "db.port", TomlInt(5433)))
+
+    test.case("the value changed")
+    test.assert(str.contains(out, "5433"))
+
+    test.case("the comment above survived")
+    test.assert(str.contains(out, "# a comment"))
+
+    test.case("the trailing comment survived, and stayed trailing")
+    test.assert(str.contains(out, "# inline"))
+
+    test.case("the spacing around the `=` survived")
+    test.assert(str.contains(out, "port   = 5433"))
+
+    test.case("setting a value to what it already was leaves the bytes alone")
+    let same = edited_set(src, "db.port", TomlInt(5432))
+    test.assert(tomledit.is_unchanged(same))
+    test.assert(tomledit.to_string(same) == src)
+
+@test
+fn test_the_editing_document_reads_and_writes_the_prose() [io]
+    test.case("comment_at finds the whole-line comment above a key")
+    let d = edited("# the listening port\nport = 8080\n")
+    test.assert((tomledit.comment_at(d, "port") ?? "") == "the listening port")
+
+    test.case("a key with no comment has none")
+    test.assert(tomledit.comment_at(edited("port = 1\n"), "port") == None)
+
+    test.case("set_comment writes above, never the trailing one")
+    match tomledit.set_comment(edited("port = 8080\n"), "port", "why")
+        Ok(d2) => test.assert(tomledit.to_string(d2) == "# why\nport = 8080\n")
+        Err(_) => test.fail("`port` is a key this document has")
+
+@test
+fn test_spans_and_positions_are_public_so_a_tool_need_not_reparse() [io]
+    let d = edited("[db]\nport = 5432\n")
+
+    test.case("span_of is a half-open byte range into to_string(d)")
+    match tomledit.span_of(d, "db.port")
+        Some((s, e)) =>
+            test.assert(str.slice(tomledit.to_string(d), s, e) == "5432")
+        None         => test.fail("`db.port` is in the document")
+
+    test.case("position_of is 1-based line and column")
+    let (l, c) = tomledit.position_of(d, "db.port")
+    test.assert(l == 2)
+    test.assert(c == 8)
+
+    test.case("a path that is not there uses the package's one no-position convention")
+    let (nl, nc) = tomledit.position_of(d, "db.user")
+    test.assert(nl == -1)
+    test.assert(nc == -1)

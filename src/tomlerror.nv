@@ -1,0 +1,184 @@
+// tomlerror.nv — every way a TOML document can refuse to be read, and
+// where in the file the reader has to go and look.
+//
+// WHY THE POSITION IS IN THE VARIANT AND NOT BESIDE IT
+//
+// A TOML file is a thing a person edited by hand — it is the format
+// chosen precisely because people edit it — so the answer they need is
+// "line 41, column 12", not "parse error".  A parser that returns a
+// reason and makes the caller carry the cursor gets a caller that does
+// not carry the cursor.  Every reason that HAS a position therefore
+// carries it, and the three that do not — a key that is not in the
+// document, a value of the wrong type, a stream that failed — are
+// honest about having none.  `line_of` answers `-1` for those rather
+// than `0`, because line 0 does not exist and a caller printing it has
+// been told nothing.
+//
+// Lines and columns are both 1-based, and the column is a BYTE offset
+// into the line.  That is what an editor's status bar shows and what
+// `sed -n` can jump to.  It is not a character offset: TOML documents
+// are required to be UTF-8, but a file that is NOT is exactly the file
+// a person needs the position for, and a byte offset can always be
+// produced.
+//
+// WHAT IS NOT AN ERROR HERE
+//
+// There is no "unsupported" arm.  This package parses TOML 1.0.0
+// whole; a document it refuses is a document the specification
+// refuses, and the variant says which rule.  An arm meaning "this
+// parser did not get around to it" would make every error message a
+// question about the parser rather than about the file.
+
+// Why a TOML document, or a request about a parsed one, could not be
+// answered.
+//
+// ```novo
+// use tomlerror
+//
+// fn main() [io]
+//     let e = UnterminatedString(41, 12)
+//     println("line ${tomlerror.line_of(e)}, col ${tomlerror.col_of(e)}")
+// ```
+pub enum TomlError
+    // A basic or literal string was still open when the line — or, for
+    // a multi-line string, the document — ended.  The position is
+    // where the opening delimiter was, which is the byte a person has
+    // to go and fix, not the end of the file where it was noticed.
+    UnterminatedString(line: Int, col: Int)
+    // An escape sequence inside a basic string that TOML § "String"
+    // does not define.  `seq` is the escape as written, `\` included,
+    // so the message can quote it back.
+    BadEscape(line: Int, col: Int, seq: Str)
+    // A `\uXXXX` or `\UXXXXXXXX` escape naming a scalar value that is
+    // not a Unicode scalar — a surrogate, or past U+10FFFF.  `value`
+    // is the number that was written.
+    BadUnicodeEscape(line: Int, col: Int, value: Int)
+    // A bare key containing a byte that is not `A-Za-z0-9_-`, or an
+    // empty key where the grammar requires one.  `text` is what stood
+    // in the key position.
+    BadKey(line: Int, col: Int, text: Str)
+    // A key defined twice in the same table, or a table header that
+    // names a table already closed.  `key` is the dotted path as the
+    // document spells it, and `first_line` is where it was defined the
+    // first time — both, because "which one is the duplicate" is the
+    // reader's question and the parser has no opinion.
+    DuplicateKey(line: Int, col: Int, key: Str, first_line: Int)
+    // A `[table]` or `[[array.of.tables]]` header that is malformed,
+    // unclosed, or redefines a key that is not a table.  `why` is
+    // prose because the header rules of TOML § "Table" are several
+    // and a caller printing one of them wants the sentence.
+    BadTableHeader(line: Int, col: Int, why: Str)
+    // A `[[name]]` appended to a `name` that is not an array of
+    // tables, or a `[name]` opened on one that is.  The two are
+    // separate mistakes with the same fix, and naming the key is what
+    // makes the fix findable.
+    TableKindMismatch(line: Int, col: Int, key: Str)
+    // An integer literal outside the signed 64-bit range TOML §
+    // "Integer" requires, or one whose underscores are misplaced.
+    // `text` is the literal as written.
+    BadInteger(line: Int, col: Int, text: Str)
+    // A float literal that is not one of TOML § "Float"'s spellings —
+    // a bare `.5`, a trailing `1.`, an exponent with no digits, or a
+    // misplaced underscore.  `inf` and `nan` are valid floats and do
+    // not come here.
+    BadFloat(line: Int, col: Int, text: Str)
+    // A date-time literal the RFC 3339 subset does not accept: a
+    // month of 13, a February 30th, an offset of `+25:00`, a `T` with
+    // nothing after it.  `text` is the literal, and `cause` is
+    // calendar-nv's own verdict where it had one, so a caller can
+    // tell "not a date at all" from "a date that does not exist".
+    BadDateTime(line: Int, col: Int, text: Str, cause: Str)
+    // A value position holding something that is not a TOML value —
+    // a bare word that is not `true`, `false`, `inf` or `nan`, a `{`
+    // where an inline table cannot go, a missing right-hand side.
+    BadValue(line: Int, col: Int, text: Str)
+    // An inline table spanning a newline, or an inline table or array
+    // that was never closed.  TOML § "Inline Table" forbids the
+    // newline outright, which is a rule people are surprised by often
+    // enough that it gets its own arm rather than hiding in
+    // `BadValue`.
+    UnterminatedInline(line: Int, col: Int)
+    // A byte that cannot appear where it appeared: a control
+    // character in a string, a `\r` not followed by `\n`, a stray
+    // `]`.  `byte` is its value, so a message can print it as hex
+    // rather than as whatever it renders to.
+    UnexpectedByte(line: Int, col: Int, byte: Int)
+    // The document nested tables, arrays and inline tables deeper
+    // than `limit`.  A bound rather than a stack overflow: a
+    // recursive-descent parser handed `[[[[[[…` should refuse at a
+    // named depth and say so, and an embedded consumer needs the
+    // depth to be its own choice.  `tomlread.default_depth` is what
+    // `parse` uses.
+    TooDeep(line: Int, col: Int, limit: Int)
+    // A lookup or a typed read asked for a key the document does not
+    // have.  No position: the fault is in the caller's path, not in
+    // the file.  `path` is the dotted path as the caller wrote it.
+    NoSuchKey(path: Str)
+    // A typed read found a value of the wrong kind — `int_at` on a
+    // string, `table_at` on an array.  `want` and `got` are
+    // `tomlnode.type_name` spellings, and `path` is where.  No
+    // position, because the value is where the document put it and
+    // the mistake is in the expectation.
+    WrongType(path: Str, want: Str, got: Str)
+    // The stream underneath `tomlread.read_all` failed.  The host's
+    // error, carried through unmodified: this package does not know
+    // what a socket timing out means to the program that opened it,
+    // and flattening it to a string would take the retry decision
+    // away from the caller.  Naming the type costs no effects.
+    Transport(cause: IoError)
+
+// `TomlError` is an `Error`, which is what lets `Result<T, TomlError>`
+// exist at all (SPEC § 3.4) and what makes `!` propagate one out of a
+// caller that has its own error type.
+impl Error for TomlError
+    // The one-line message, for a caller that is printing rather than
+    // matching.
+    //
+    // The sentence names the rule and not the parser's state: "a
+    // basic string was never closed", not "unexpected EOF in state
+    // 7".  It does NOT include the position — `line_of` and `col_of`
+    // are separate so that a caller can render `file:line:col:
+    // message` in whatever shape its own diagnostics have.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("toml-nv.TomlError.message")
+
+// The 1-based line, or `-1` for the three reasons that have no
+// position.
+//
+// ```novo
+// use tomlerror
+//
+// fn main() [io]
+//     println("${tomlerror.line_of(NoSuchKey("db.host"))}")   // -1
+// ```
+pub fn line_of(e: TomlError) -> Int
+    todo("toml-nv.tomlerror.line_of")
+
+// The 1-based byte column within that line, or `-1`.
+//
+// ```novo
+// use tomlerror
+//
+// fn main() [io]
+//     println("${tomlerror.col_of(BadKey(3, 1, "a b"))}")     // 1
+// ```
+pub fn col_of(e: TomlError) -> Int
+    todo("toml-nv.tomlerror.col_of")
+
+// `file:line:col: message`, the form an editor's error list parses.
+//
+// `path` is the caller's — this package never learned a filename,
+// because it never opened anything.  A reason with no position
+// renders as `file: message`, with the colons omitted rather than
+// filled with `-1`.
+//
+// ```novo
+// use tomlerror
+//
+// fn main() [io]
+//     println(tomlerror.render(BadKey(3, 1, "a b"), "novo.toml"))
+// ```
+pub fn render(e: TomlError, path: Str) -> Str
+    todo("toml-nv.tomlerror.render")

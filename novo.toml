@@ -1,0 +1,44 @@
+[package]
+name        = "toml-nv"
+version     = "0.0.1"
+description = "TOML 1.0.0, read and written without performing anything: a typed value tree whose date arms are calendar-nv's civil types, a parser that names the line and the column of every refusal, dotted-key and table access, a canonical writer that preserves nothing, and an editing document that preserves comments, key order and spacing so a tool can change one value and hand the file back."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`, and TOML makes that easy: a document is a string the caller
+# already holds and the parse is arithmetic over its bytes.  The one
+# function that meets a stream — `tomlread.read_all<S: Read[e]>` —
+# stays inside the budget by BINDING its cost rather than spending
+# one, so it is charged whatever the caller's impl supplies
+# (SPEC § 5.6).  Nothing else here reaches for anything at all, and
+# that is what lets a firmware read its own configuration.
+layer       = "core"
+
+category    = "data"
+
+tags        = ["toml", "toml-1.0", "config", "parser", "formatter", "sans-io", "data"]
+repository  = "https://github.com/novolang/toml-nv"
+maintainers = ["novo-lang"]
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Reading and writing TOML"
+
+[dependencies]
+# calendar-nv supplies the four civil types TOML's date-time grammar
+# needs — `CivilDate`, `CivilTime`, `CivilDateTime` — so that a
+# consumer holding a TOML date and a consumer holding a calendar date
+# hold the SAME type and can compare them.  Declaring our own would
+# have made two incompatible dates in one program, which is the
+# failure `docs/publishing.md` § Public type names are globally unique
+# describes.  A path dependency until both are on the registry;
+# `core`, so the layer rule holds.
+calendar-nv = { path = "../calendar-nv", version = "^0.0.1" }

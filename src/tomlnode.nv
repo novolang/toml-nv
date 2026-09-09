@@ -1,0 +1,263 @@
+// tomlnode.nv — the value tree, and the four date types it does NOT
+// declare.
+//
+// THE DATES COME FROM calendar-nv, ON PURPOSE
+//
+// TOML has four date-time forms and a value tree has to hold all four.
+// Declaring `TomlDate`, `TomlTime` and `TomlDateTime` here would have
+// been less typing and a worse package: a program that reads a
+// timestamp out of a config file and compares it with a date it got
+// from anywhere else would then hold two unrelated types that happen
+// to have the same fields, and `docs/publishing.md` § Public type
+// names are globally unique is the section about why that goes wrong.
+// So the arms carry calendar-nv's civil types, and the mapping is:
+//
+//     TOML form            arm                       carries
+//     ------------------   -----------------------   ----------------------------
+//     offset date-time     TomlOffsetDateTime        civil.CivilDateTime + offset_min
+//     local date-time      TomlLocalDateTime         civil.CivilDateTime
+//     local date           TomlLocalDate             civil.CivilDate
+//     local time           TomlLocalTime             civil.CivilTime
+//
+// `offset_min` is minutes east of UTC — `+02:00` is `120`, `-05:30` is
+// `-330`, and `Z` is `0`.  It sits BESIDE the civil date-time rather
+// than inside a zoned type because TOML's offset is a fixed number of
+// minutes and not a zone: `2026-09-09T10:00:00+02:00` says what the
+// offset was, not which zone it came from, and a package that invented
+// a zone would be inventing.  That is the same split calendar-nv's own
+// `parse_rfc3339` makes, which returns exactly this pair.
+//
+// A TABLE IS AN ORDERED LIST OF PAIRS, NOT A MAP
+//
+// Two reasons, and neither is performance.  First, TOML documents are
+// read back by tools that write them again, and a writer that emitted
+// keys in hash order would rewrite every file it touched.  Second, a
+// map would make `DuplicateKey` unrepresentable — the parser would
+// silently keep the last one — and a duplicate key is an error the
+// specification requires, so the tree has to be able to hold what the
+// parser refuses.  Lookup is `tomlkeys.get`, which is a scan; a
+// document with enough keys for that to matter is not a config file.
+
+use civil
+
+// A TOML value: every form the grammar has, and nothing else.
+//
+// `TomlTable` and `TomlArray` are the two that nest.  There is no
+// `TomlNull` arm because TOML has no null — a key that is absent is
+// absent, which is `?TomlValue` at the lookup and not a value in the
+// tree.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     let v = TomlInt(8080)
+//     println(tomlnode.type_name(v))            // "integer"
+// ```
+pub enum TomlValue
+    // A table: its pairs in the order the document wrote them.
+    // Both `[header]` tables and `{ inline = "tables" }` land here —
+    // the difference is a spelling the writer chooses, not a
+    // difference in the value, and `tomledit` is where a document
+    // remembers which one it had.
+    TomlTable(pairs: [TomlPair])
+    // An array.  TOML 1.0.0 dropped the same-type requirement, so
+    // this is a list of anything; an array of tables is this with
+    // `TomlTable` arms in it.
+    TomlArray(items: [TomlValue])
+    // A string, already unescaped and with the multi-line forms'
+    // leading newline and line-ending backslashes applied.  What is
+    // here is the value; how it was spelled is `tomledit`'s business.
+    TomlStr(value: Str)
+    // A signed 64-bit integer.  TOML § "Integer" requires exactly
+    // that range, so the arm is `Int` and a literal outside it is
+    // `BadInteger` at parse time rather than a wrapped value here.
+    TomlInt(value: Int)
+    // A 64-bit float, `inf` and `nan` included — TOML spells them
+    // `inf`, `+inf`, `-inf`, `nan`, and they are values rather than
+    // errors.
+    TomlFloat(value: Float)
+    // `true` or `false`, which are the only two spellings TOML
+    // accepts; `True` and `yes` are `BadValue`.
+    TomlBool(value: Bool)
+    // An offset date-time: the civil parts, and minutes east of UTC.
+    TomlOffsetDateTime(when: civil.CivilDateTime, offset_min: Int)
+    // A local date-time: a wall-clock reading with no offset at all.
+    // Distinct from an offset date-time with `offset_min = 0`,
+    // because `Z` is a claim about UTC and no offset is a refusal to
+    // claim, and a writer must not turn one into the other.
+    TomlLocalDateTime(when: civil.CivilDateTime)
+    // A local date: a calendar day with no time and no offset.
+    TomlLocalDate(day: civil.CivilDate)
+    // A local time: a time of day with no date and no offset.
+    TomlLocalTime(at: civil.CivilTime)
+
+// One key and its value, in document order.
+//
+// `key` is the key as a VALUE — unquoted, unescaped, the string a
+// caller would compare against.  A bare key, a quoted key and a
+// literal key that spell the same characters produce the same `key`,
+// which is what makes `a.b`, `a."b"` and `"a".b` the same path, as
+// TOML § "Keys" requires.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     let p = TomlPair { key: "port", value: TomlInt(8080) }
+//     println(p.key)                            // port
+// ```
+pub struct TomlPair
+    // The key, unquoted and unescaped.
+    key: Str
+    // What it is bound to.
+    value: TomlValue
+
+// Which arm a value is, as a value a caller can match or print.
+//
+// It exists so that a caller writing "expected a table, found …" does
+// not have to write a ten-arm match to produce the second half of the
+// sentence, and so that `WrongType`'s `want` and `got` have a spelling
+// this package agrees on.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     match tomlnode.type_of(TomlBool(true))
+//         TypeBool => println("a boolean")
+//         _        => println("something else")
+// ```
+pub enum TomlType
+    TypeTable
+    TypeArray
+    TypeStr
+    TypeInt
+    TypeFloat
+    TypeBool
+    TypeOffsetDateTime
+    TypeLocalDateTime
+    TypeLocalDate
+    TypeLocalTime
+
+// The type of a value.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     match tomlnode.type_of(TomlArray([]))
+//         TypeArray => println("array")
+//         _         => println("not an array")
+// ```
+pub fn type_of(v: TomlValue) -> TomlType
+    todo("toml-nv.tomlnode.type_of")
+
+// The type's name in the spelling TOML's own specification uses:
+// `"table"`, `"array"`, `"string"`, `"integer"`, `"float"`,
+// `"boolean"`, `"offset date-time"`, `"local date-time"`,
+// `"local date"`, `"local time"`.
+//
+// These are the strings `WrongType` carries, so an error message and a
+// hand-written one say the same words.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     println(tomlnode.type_name(TomlFloat(1.5)))   // float
+// ```
+pub fn type_name(v: TomlValue) -> Str
+    todo("toml-nv.tomlnode.type_name")
+
+// An empty table, which is what an empty document parses to.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     println("${tomlnode.len(tomlnode.empty_table())}")   // 0
+// ```
+pub fn empty_table() -> TomlValue
+    todo("toml-nv.tomlnode.empty_table")
+
+// A table from pairs, in the order given.
+//
+// It does NOT check for duplicate keys: a caller building a tree by
+// hand is the author of it, and `tomlwrite.check` is where a tree is
+// held to the document rules before it is written out.  That keeps one
+// validation pass instead of two that can disagree.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     let t = tomlnode.table([TomlPair { key: "n", value: TomlInt(1) }])
+//     println("${tomlnode.len(t)}")             // 1
+// ```
+pub fn table(pairs: [TomlPair]) -> TomlValue
+    todo("toml-nv.tomlnode.table")
+
+// How many pairs a table has, or how many items an array has.
+//
+// `0` for a scalar, because "how long is this integer" has no better
+// answer and a caller asking it has already gone wrong somewhere the
+// type system would have caught with a match.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     println("${tomlnode.len(TomlArray([TomlInt(1), TomlInt(2)]))}")  // 2
+// ```
+pub fn len(v: TomlValue) -> Int
+    todo("toml-nv.tomlnode.len")
+
+// A table's keys, in document order.
+//
+// An empty list for anything that is not a table.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     let t = tomlnode.table([TomlPair { key: "a", value: TomlInt(1) }])
+//     println("${list.len(tomlnode.keys(t))}")  // 1
+// ```
+pub fn keys(v: TomlValue) -> [Str]
+    todo("toml-nv.tomlnode.keys")
+
+// Two values compared structurally: same arm, same contents, and for
+// tables the same pairs in the same ORDER.
+//
+// Order-sensitive because these are documents.  Two files that bind
+// the same keys to the same values in a different order are different
+// files, a formatter that reordered them would be wrong, and a test
+// asserting a round trip needs the strict answer.  A caller who wants
+// the order-insensitive comparison sorts the keys first, which is a
+// decision it can make and this package cannot.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     println("${tomlnode.equal(TomlInt(1), TomlInt(1))}")   // true
+// ```
+pub fn equal(a: TomlValue, b: TomlValue) -> Bool
+    todo("toml-nv.tomlnode.equal")
+
+// The nesting depth of a value: `0` for a scalar, `1` for a table or
+// array of scalars, and so on.
+//
+// `tomlwrite` uses it to decide indentation, and a caller that is
+// about to hand a tree to something with a recursion limit of its own
+// uses it to find out first.
+//
+// ```novo
+// use tomlnode
+//
+// fn main() [io]
+//     println("${tomlnode.depth(TomlArray([TomlArray([])]))}")   // 2
+// ```
+pub fn depth(v: TomlValue) -> Int
+    todo("toml-nv.tomlnode.depth")
