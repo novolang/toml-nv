@@ -1,6 +1,6 @@
 [package]
 name        = "toml-nv"
-version     = "0.0.3"
+version     = "0.0.4"
 description = "TOML 1.0.0, read and written without performing anything: a typed value tree whose date arms are calendar-nv's civil types, a parser that names the line and the column of every refusal, dotted-key and table access, a canonical writer that preserves nothing, and an editing document that preserves comments, key order and spacing so a tool can change one value and hand the file back."
 license     = "Apache-2.0"
 
