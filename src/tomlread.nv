@@ -165,18 +165,14 @@ pub fn read_all<S: Read[e]>(src: S) -> Result<TomlValue, TomlError> [e]
 // ```
 pub fn read_all_with_depth<S: Read[e]>(src: S, max_depth: Int) -> Result<TomlValue, TomlError> [e]
     var chunks: [Bytes] = []
-    var failure: ?IoError = None
     loop
         match src.read(4096)
             Err(e)    =>
-                failure = Some(e)
-                break
+                return Err(Transport(e))
             Ok(chunk) =>
                 if bytes.len(chunk) == 0
                     break
                 list.push(chunks, bytes.clone(chunk))
-    if let Some(e) = failure
-        return Err(Transport(e))
     parse_bytes_with_depth(bytes.concat(chunks), max_depth)
 
 // The line and column a parse would stop at, for a caller that wants
