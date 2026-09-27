@@ -236,7 +236,7 @@ pub fn keys(v: TomlValue) -> [Str]
 // ```
 pub fn equal(a: TomlValue, b: TomlValue) -> Bool
     match a
-        TomlTable(xs)             =>
+        TomlTable(xs) =>
             if let TomlTable(ys) = b
                 if list.len(xs) != list.len(ys)
                     return false
@@ -245,7 +245,7 @@ pub fn equal(a: TomlValue, b: TomlValue) -> Bool
                         return false
                 return true
             false
-        TomlArray(xs)             =>
+        TomlArray(xs) =>
             if let TomlArray(ys) = b
                 if list.len(xs) != list.len(ys)
                     return false
@@ -254,38 +254,11 @@ pub fn equal(a: TomlValue, b: TomlValue) -> Bool
                         return false
                 return true
             false
-        TomlStr(x)                =>
-            if let TomlStr(y) = b
-                return x == y
-            false
-        TomlInt(x)                =>
-            if let TomlInt(y) = b
-                return x == y
-            false
-        TomlFloat(x)              =>
+        TomlFloat(x)  =>
             if let TomlFloat(y) = b
                 return x == y or math.is_nan(x) and math.is_nan(y)
             false
-        TomlBool(x)               =>
-            if let TomlBool(y) = b
-                return x == y
-            false
-        TomlOffsetDateTime(x, xo) =>
-            if let TomlOffsetDateTime(y, yo) = b
-                return xo == yo and civil.compare_datetime(x, y) == 0
-            false
-        TomlLocalDateTime(x)      =>
-            if let TomlLocalDateTime(y) = b
-                return civil.compare_datetime(x, y) == 0
-            false
-        TomlLocalDate(x)          =>
-            if let TomlLocalDate(y) = b
-                return civil.compare_date(x, y) == 0
-            false
-        TomlLocalTime(x)          =>
-            if let TomlLocalTime(y) = b
-                return civil.nano_of_day(x) == civil.nano_of_day(y)
-            false
+        _             => a == b
 
 // The nesting depth of a value: `0` for a scalar, `1` for a table or
 // array of scalars, and so on.
