@@ -1,0 +1,135 @@
+// tomlwrite_tests.nv — the shapes the canonical writer produces.
+//
+// Each case builds a tree by hand and states the exact text.  The
+// round trip over the whole of toml-test's valid corpus is in
+// `tests/toml_test.sh`; these cases pin the layout rules one at a time.
+
+use std.test
+use std.math
+use civil
+use tomlnode
+use tomlerror
+use tomlwrite
+
+fn written(v: TomlValue, style: TomlStyle) -> Str
+    match tomlwrite.to_string(v, style)
+        Ok(s)  => s
+        Err(e) => "error: " + e.message()
+
+fn t(pairs: [TomlPair]) -> TomlValue
+    tomlnode.table(pairs)
+
+fn kv(k: Str, v: TomlValue) -> TomlPair
+    TomlPair { key: k, value: v }
+
+@test
+fn test_tables_become_headers_in_document_order() [io]
+    let doc = t([
+        kv("a", TomlInt(1)),
+        kv("t", t([kv("x", TomlInt(1)), kv("u", t([kv("y", TomlInt(2))]))])),
+        kv("arr", TomlArray([t([kv("n", TomlInt(1))]), t([kv("n", TomlInt(2))])]))])
+
+    test.case("the standard style: a blank line before each header")
+    test.assert(written(doc, tomlwrite.standard())
+                == "a = 1\n\n[t]\nx = 1\n\n[t.u]\ny = 2\n\n[[arr]]\nn = 1\n\n[[arr]]\nn = 2\n")
+
+    test.case("a table holding only tables needs no header of its own")
+    test.assert(written(t([kv("t", t([kv("u", t([kv("y", TomlInt(2))]))]))]), tomlwrite.standard())
+                == "[t.u]\ny = 2\n")
+
+    test.case("an empty table keeps its header")
+    test.assert(written(t([kv("t", t([]))]), tomlwrite.standard()) == "[t]\n")
+
+    test.case("a table followed by a plain key stays inline, so no key moves")
+    test.assert(written(t([kv("t", t([kv("x", TomlInt(1))])), kv("a", TomlInt(1))]), tomlwrite.standard())
+                == "t = { x = 1 }\na = 1\n")
+
+    test.case("an empty document is one line ending")
+    test.assert(written(t([]), tomlwrite.standard()) == "\n")
+
+@test
+fn test_the_compact_and_indented_styles() [io]
+    test.case("compact writes tables inline and arrays of tables as headers")
+    test.assert(written(t([kv("a", TomlInt(1)), kv("t", t([kv("x", TomlInt(1))]))]), tomlwrite.compact())
+                == "a = 1\nt = { x = 1 }\n")
+    test.assert(written(t([kv("arr", TomlArray([t([kv("n", TomlInt(1))])]))]), tomlwrite.compact())
+                == "[[arr]]\nn = 1\n")
+
+    test.case("an indent of two spaces per header level")
+    let style = TomlStyle { indent: 2, array_width: 0, blank_before_table: false, prefer_headers: true }
+    test.assert(written(t([kv("t", t([kv("x", TomlInt(1)), kv("u", t([kv("y", TomlInt(2))]))]))]), style)
+                == "[t]\n  x = 1\n  [t.u]\n    y = 2\n")
+
+@test
+fn test_a_long_array_wraps_one_item_per_line() [io]
+    let narrow = TomlStyle { indent: 0, array_width: 10, blank_before_table: true, prefer_headers: true }
+
+    test.case("past the width")
+    test.assert(written(t([kv("k", TomlArray([TomlInt(1), TomlInt(2), TomlInt(3)]))]), narrow)
+                == "k = [\n    1,\n    2,\n    3,\n]\n")
+
+    test.case("an empty array never wraps")
+    test.assert(written(t([kv("k", TomlArray([]))]), narrow) == "k = []\n")
+
+    test.case("and an array of mixed values is an array, not a set of headers")
+    test.assert(written(t([kv("k", TomlArray([t([]), TomlInt(1)]))]), tomlwrite.standard())
+                == "k = [{}, 1]\n")
+
+@test
+fn test_every_value_has_one_spelling() [io]
+    test.case("floats always read back as floats")
+    test.assert(tomlwrite.value_to_string(TomlFloat(2.0)) == "2.0")
+    test.assert(tomlwrite.value_to_string(TomlFloat(1.5)) == "1.5")
+    test.assert(tomlwrite.value_to_string(TomlFloat(1.0e21)) == "1e+21")
+    test.assert(tomlwrite.value_to_string(TomlFloat(math.nan())) == "nan")
+    test.assert(tomlwrite.value_to_string(TomlFloat(math.infinity())) == "inf")
+    test.assert(tomlwrite.value_to_string(TomlFloat(0.0 - math.infinity())) == "-inf")
+
+    test.case("strings escape what TOML requires")
+    test.assert(tomlwrite.value_to_string(TomlStr("q\"b\\t\tr\rb\x08f\x0cz\x01\x7f"))
+                == "\"q\\\"b\\\\t\\tr\\rb\\bf\\fz\\u0001\\u007F\"")
+
+    test.case("a key that is not bare is quoted")
+    test.assert(tomlwrite.key_to_string("a.b") == "\"a.b\"")
+
+    test.case("booleans and inline tables")
+    test.assert(tomlwrite.value_to_string(TomlBool(false)) == "false")
+    test.assert(tomlwrite.value_to_string(t([kv("a", TomlInt(1)), kv("b c", TomlInt(2))])) == "{ a = 1, \"b c\" = 2 }")
+
+@test
+fn test_the_date_and_time_spellings() [io]
+    match civil.date(1979, 5, 27)
+        Ok(d)  =>
+            match civil.time_of(7, 32, 0, 500000000)
+                Ok(tm) =>
+                    let dt = civil.datetime(d, tm)
+                    test.case("an offset of zero is Z, and any other is +HH:MM")
+                    test.assert(tomlwrite.value_to_string(TomlOffsetDateTime(dt, 0)) == "1979-05-27T07:32:00.500Z")
+                    test.assert(tomlwrite.value_to_string(TomlOffsetDateTime(dt, 0 - 330)) == "1979-05-27T07:32:00.500-05:30")
+                    test.case("the three local forms")
+                    test.assert(tomlwrite.value_to_string(TomlLocalDateTime(dt)) == "1979-05-27T07:32:00.500")
+                    test.assert(tomlwrite.value_to_string(TomlLocalDate(d)) == "1979-05-27")
+                    test.assert(tomlwrite.value_to_string(TomlLocalTime(tm)) == "07:32:00.500")
+                Err(_) => test.fail("07:32:00.5 is a time")
+        Err(_) => test.fail("1979-05-27 is a date")
+
+@test
+fn test_check_finds_a_key_defined_twice_anywhere() [io]
+    test.case("at the top level")
+    test.assert(tomlwrite.check(t([kv("a", TomlInt(1)), kv("a", TomlInt(2))])) == Some(DuplicateKey(0 - 1, 0 - 1, "a", 0 - 1)))
+
+    test.case("inside a table, named by its path")
+    test.assert(tomlwrite.check(t([kv("t", t([kv("x", TomlInt(1)), kv("x", TomlInt(2))]))]))
+                == Some(DuplicateKey(0 - 1, 0 - 1, "t.x", 0 - 1)))
+
+    test.case("inside a table of an array")
+    let arr = TomlArray([t([]), t([kv("n", TomlInt(1)), kv("n", TomlInt(1))])])
+    test.assert(tomlwrite.check(t([kv("p", arr)])) == Some(DuplicateKey(0 - 1, 0 - 1, "p.n", 0 - 1)))
+
+    test.case("and to_string refuses what check refuses")
+    test.assert(written(t([kv("a", TomlInt(1)), kv("a", TomlInt(2))]), tomlwrite.standard()) == "error: `a` is defined twice")
+
+    test.case("to_bytes refuses it too")
+    match tomlwrite.to_bytes(TomlInt(1), tomlwrite.standard())
+        Ok(_)  => test.fail("an integer is not a document")
+        Err(e) => test.assert(tomlerror.line_of(e) == 0 - 1)

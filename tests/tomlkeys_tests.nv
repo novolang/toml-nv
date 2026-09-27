@@ -1,12 +1,8 @@
-// tomlkeys_tests.nv — the API suite for path access.
+// tomlkeys_tests.nv — the suite for path access: the two lookup
+// channels and the path language.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// toml-nv.tomlkeys.<fn>`.  What is asserted is the contract of the two
-// lookup channels and of the path language.
-//
-// The helpers below read a fixture that is known good.  A case whose
-// SUBJECT is a refusal matches on the `Result` in full instead — that
-// is the assertion, and a helper would swallow it.
+// The helpers read a fixture that is known good.  A case whose subject
+// is a refusal matches on the `Result` in full instead.
 
 use std.test
 use tomlnode

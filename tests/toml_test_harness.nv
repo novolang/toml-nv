@@ -1,0 +1,102 @@
+// toml_test_harness.nv — the program `tests/toml_test.sh` runs over the
+// toml-test corpus.
+//
+// It reads a file that lists one TOML file per line and prints, for
+// each, `=== <path>` and then either `OK` with the tree in toml-test's
+// tagged JSON form and an `RT` line with the round-trip verdicts, or
+// `ERR` with the refusal.  The round trips are the canonical writer in
+// both styles, read back and compared with `tomlnode.equal`, and the
+// editing document rendered back to the text it was given.
+
+use std.str
+use std.bytes
+use std.fs
+use std.env
+use iso8601
+use tomlnode
+use tomlerror
+use tomlread
+use tomlwrite
+use tomledit
+
+// A JSON string: quotes around the text, with `"`, `\` and control
+// characters escaped.
+fn esc(s: Str) -> Str
+    var out = "\""
+    for i in 0..str.len(s)
+        let b = str.byte_at_or(s, i, 0)
+        if b == '"'
+            out = out + "\\\""
+        else if b == '\\'
+            out = out + "\\\\"
+        else if b < 32 or b == 127
+            let hex = "0123456789abcdef"
+            out = out + "\\u00" + str.slice(hex, b / 16, b / 16 + 1) + str.slice(hex, b % 16, b % 16 + 1)
+        else
+            out = out + str.slice(s, i, i + 1)
+    out + "\""
+
+// A scalar in toml-test's form: its type and its value as a string.
+fn tagged(kind: Str, v: Str) -> Str
+    "{\"type\": \"${kind}\", \"value\": ${esc(v)}}"
+
+// A value in toml-test's tagged JSON form.
+fn json(v: TomlValue) -> Str
+    match v
+        TomlTable(pairs)            =>
+            var parts: [Str] = []
+            for p in pairs
+                list.push(parts, esc(p.key) + ": " + json(p.value))
+            "{" + str.join(parts, ", ") + "}"
+        TomlArray(items)            =>
+            var parts: [Str] = []
+            for x in items
+                list.push(parts, json(x))
+            "[" + str.join(parts, ", ") + "]"
+        TomlStr(s)                  => tagged("string", s)
+        TomlInt(n)                  => tagged("integer", "${n}")
+        TomlFloat(f)                => tagged("float", "${f}")
+        TomlBool(b)                 => tagged("bool", str.from_bool(b))
+        TomlOffsetDateTime(dt, off) => tagged("datetime", iso8601.format_rfc3339(dt, off))
+        TomlLocalDateTime(dt)       => tagged("datetime-local", iso8601.format_datetime(dt))
+        TomlLocalDate(d)            => tagged("date-local", iso8601.format_date(d))
+        TomlLocalTime(t)            => tagged("time-local", iso8601.format_time(t))
+
+// `ok` when the tree written in `style` reads back equal, and why not
+// otherwise.
+fn same_after(v: TomlValue, style: TomlStyle) -> Str
+    match tomlwrite.to_string(v, style)
+        Ok(text) =>
+            match tomlread.parse(text)
+                Ok(w)  =>
+                    if tomlnode.equal(v, w)
+                        return "ok"
+                    "differs"
+                Err(e) => "reparse " + tomlerror.render(e, "out")
+        Err(e)   => "write " + tomlerror.render(e, "out")
+
+// The three round-trip verdicts for one document.
+fn round_trips(v: TomlValue, text: Str) -> Str
+    var edit = "edit-ok"
+    match tomledit.parse(text)
+        Ok(d)  =>
+            if tomledit.to_string(d) != text
+                edit = "edit-differs"
+        Err(_) =>
+            edit = "edit-refused"
+    "standard=" + same_after(v, tomlwrite.standard()) + " compact=" + same_after(v, tomlwrite.compact()) + " " + edit
+
+fn main() [io, fs]
+    let args = env.args()
+    let listing = fs.read(args[1]) ?? ""
+    for path in str.split(listing, "\n")
+        if path != ""
+            println("=== " + path)
+            match fs.read_bytes(path)
+                None    => println("NOFILE")
+                Some(b) =>
+                    match tomlread.parse_bytes(b)
+                        Ok(v)  =>
+                            println("OK " + json(v))
+                            println("RT " + round_trips(v, bytes.to_str(b)))
+                        Err(e) => println("ERR " + tomlerror.render(e, "doc"))

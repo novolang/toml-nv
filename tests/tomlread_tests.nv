@@ -1,16 +1,9 @@
-// tomlread_tests.nv — the API suite for the parser and the two
-// writers.
+// tomlread_tests.nv — the suite for the parser and the two writers:
+// the grammar this package accepts, the position every refusal
+// carries, and the two round-trip laws.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// toml-nv.<module>.<fn>`.  What is asserted is the grammar this
-// package claims to accept, the position every refusal carries, and
-// the two round-trip laws.
-//
-// The four helpers below unwrap a fixture that is known good, once
-// each, so that the cases read as the assertions they are rather than
-// as a column of `!`.  A case whose SUBJECT is a refusal always
-// matches on the `Result` in full — that is the assertion, and a
-// helper would swallow it.
+// The helpers unwrap a fixture that is known good.  A case whose
+// subject is a refusal matches on the `Result` in full.
 
 use std.test
 use tomlnode

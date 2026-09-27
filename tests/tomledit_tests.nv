@@ -1,0 +1,211 @@
+// tomledit_tests.nv — what the editing document changes, and what it
+// leaves alone.
+//
+// Each case gives a document, one edit, and the exact text that must
+// come back, so a reader can see every byte the edit touched.  The
+// module header of `tomledit` lists where a new key goes; the cases
+// follow that list in order.
+
+use std.test
+use tomlnode
+use tomlerror
+use tomledit
+
+// The text after setting one value, or the error's message.
+fn after_set(src: Str, path: Str, v: TomlValue) -> Str
+    match tomledit.parse(src)
+        Ok(d)  =>
+            match tomledit.set(d, path, v)
+                Ok(next) => tomledit.to_string(next)
+                Err(e)   => "error: " + e.message()
+        Err(e) => "unparsed: " + e.message()
+
+fn after_remove(src: Str, path: Str) -> Str
+    match tomledit.parse(src)
+        Ok(d)  =>
+            match tomledit.remove(d, path)
+                Ok(next) => tomledit.to_string(next)
+                Err(e)   => "error: " + e.message()
+        Err(e) => "unparsed: " + e.message()
+
+fn after_comment(src: Str, path: Str, comment: Str) -> Str
+    match tomledit.parse(src)
+        Ok(d)  =>
+            match tomledit.set_comment(d, path, comment)
+                Ok(next) => tomledit.to_string(next)
+                Err(e)   => "error: " + e.message()
+        Err(e) => "unparsed: " + e.message()
+
+fn comment_of(src: Str, path: Str) -> Str
+    match tomledit.parse(src)
+        Ok(d)  => tomledit.comment_at(d, path) ?? "«none»"
+        Err(e) => "unparsed: " + e.message()
+
+@test
+fn test_a_new_key_goes_after_the_last_key_of_its_section() [io]
+    test.case("at the top level, before the first header")
+    test.assert(after_set("a = 1\n[t]\nx = 2\n", "b", TomlInt(2)) == "a = 1\nb = 2\n[t]\nx = 2\n")
+
+    test.case("a top level with no keys takes it just before the first header")
+    test.assert(after_set("[t]\nx = 2\n", "b", TomlInt(2)) == "b = 2\n[t]\nx = 2\n")
+
+    test.case("an empty document becomes one line")
+    test.assert(after_set("", "a", TomlInt(1)) == "a = 1\n")
+
+    test.case("a document without a final line ending gets one first")
+    test.assert(after_set("a = 1", "b", TomlInt(2)) == "a = 1\nb = 2\n")
+
+    test.case("under a header, before the next one")
+    test.assert(after_set("[t]\nx = 2\n\n[u]\ny = 3\n", "t.z", TomlBool(true))
+                == "[t]\nx = 2\nz = true\n\n[u]\ny = 3\n")
+
+    test.case("a header with no keys takes it on the next line")
+    test.assert(after_set("[t]\n[u]\n", "t.k", TomlInt(1)) == "[t]\nk = 1\n[u]\n")
+
+    test.case("with the indentation of the key before it")
+    test.assert(after_set("[t]\n  x = 1\n", "t.y", TomlInt(2)) == "[t]\n  x = 1\n  y = 2\n")
+
+@test
+fn test_a_table_made_by_dotted_keys_grows_by_dotted_keys() [io]
+    test.case("at the top level")
+    test.assert(after_set("a.b = 1\n[t]\n", "a.c", TomlInt(2)) == "a.b = 1\na.c = 2\n[t]\n")
+
+    test.case("inside a header's section")
+    test.assert(after_set("[t]\nx.y = 1\n", "t.x.z", TomlInt(2)) == "[t]\nx.y = 1\nx.z = 2\n")
+
+@test
+fn test_an_inline_table_grows_inside_its_braces() [io]
+    test.case("after a comma")
+    test.assert(after_set("p = { a = 1 }\n", "p.b", TomlInt(2)) == "p = { a = 1, b = 2 }\n")
+
+    test.case("an empty one gets its first pair")
+    test.assert(after_set("p = {}\n", "p.b", TomlInt(2)) == "p = { b = 2 }\n")
+
+    test.case("and an inline table set whole is one span")
+    test.assert(after_set("p = { a = 1 }\n", "p", TomlInt(3)) == "p = 3\n")
+
+@test
+fn test_a_deeper_new_key_opens_a_header_at_the_end() [io]
+    test.case("two tables below the top level")
+    test.assert(after_set("a = 1\n", "x.y.z", TomlInt(1)) == "a = 1\n\n[x.y]\nz = 1\n")
+
+    test.case("a table only a header implied gets a header of its own")
+    test.assert(after_set("[a.b]\nc = 1\n", "a.d", TomlInt(2)) == "[a.b]\nc = 1\n\n[a]\nd = 2\n")
+
+    test.case("after a last line with no line ending")
+    test.assert(after_set("a = 1", "x.y", TomlInt(1)) == "a = 1\n\n[x]\ny = 1\n")
+
+    test.case("from an empty document")
+    test.assert(after_set("", "x.y", TomlStr("v")) == "[x]\ny = \"v\"\n")
+
+@test
+fn test_set_refuses_what_has_no_single_span() [io]
+    test.case("a path through a value that is not a table")
+    test.assert(after_set("a = 1\n", "a.b", TomlInt(1)) == "error: `a` is an integer, not a table")
+
+    test.case("a table written as a header")
+    test.assert(after_set("[t]\nx = 1\n", "t", TomlInt(1)) == "error: `t` is a table, not an integer")
+
+    test.case("a path through an array of tables")
+    test.assert(after_set("[[p]]\nn = 1\n", "p.n", TomlInt(2)) == "error: `p` is an array, not a table")
+
+    test.case("a path that does not parse")
+    test.assert(after_set("a = 1\n", "a..b", TomlInt(1)) == "error: `.b` is not a key")
+
+@test
+fn test_remove_takes_the_line_or_the_pair() [io]
+    test.case("a line goes whole, its trailing comment with it")
+    test.assert(after_remove("# keep\na = 1 # gone\nb = 2\n", "a") == "# keep\nb = 2\n")
+
+    test.case("a pair of an inline table goes with the comma after it")
+    test.assert(after_remove("p = { a = 1, b = 2 }\n", "p.a") == "p = { b = 2 }\n")
+
+    test.case("or, when it is the last, with the comma before it")
+    test.assert(after_remove("p = { a = 1, b = 2 }\n", "p.b") == "p = { a = 1 }\n")
+
+    test.case("the only pair leaves the braces")
+    test.assert(after_remove("p = { a = 1 }\n", "p.a") == "p = {  }\n")
+
+    test.case("a header's table is refused, and a missing key too")
+    test.assert(after_remove("[t]\nx = 1\n", "t") == "error: `t` is a table, not a key")
+    test.assert(after_remove("[t]\nx = 1\n", "q") == "error: there is no key `q`")
+
+@test
+fn test_comments_are_read_where_a_person_writes_them() [io]
+    test.case("the trailing comment first")
+    test.assert(comment_of("port = 1 # trailing\n", "port") == "trailing")
+
+    test.case("then the run of comment lines above, joined")
+    test.assert(comment_of("# one\n#two\nport = 1\n", "port") == "one\ntwo")
+
+    test.case("a blank line ends the run")
+    test.assert(comment_of("# above\n\nport = 1\n", "port") == "«none»")
+
+    test.case("a header's comment is above it")
+    test.assert(comment_of("# the database\n[db]\nport = 1\n", "db") == "the database")
+
+    test.case("a path that is not there has none")
+    test.assert(comment_of("a = 1\n", "b") == "«none»")
+    test.assert(comment_of("a = 1\n", "a..") == "«none»")
+
+    test.case("and a document whose text does not parse has none")
+    let broken = TomlEdit { text: "a = = 1\n",
+        original: "",
+        value: tomlnode.empty_table(),
+        spans: [],
+        paths: [] }
+    test.assert(tomledit.comment_at(broken, "a") == None)
+
+@test
+fn test_set_comment_replaces_the_run_above() [io]
+    test.case("one comment for another, with an empty line kept as #")
+    test.assert(after_comment("# old\nport = 1\n", "port", "new\n\nline") == "# new\n#\n# line\nport = 1\n")
+
+    test.case("an empty comment removes the run")
+    test.assert(after_comment("# old\n# older\nport = 1\n", "port", "") == "port = 1\n")
+
+    test.case("at the key's indentation")
+    test.assert(after_comment("[t]\n  x = 1\n", "t.x", "c") == "[t]\n  # c\n  x = 1\n")
+
+    test.case("above a header")
+    test.assert(after_comment("[db]\nport = 1\n", "db", "d") == "# d\n[db]\nport = 1\n")
+
+    test.case("a key that is not there is refused")
+    test.assert(after_comment("a = 1\n", "b", "c") == "error: there is no key `b`")
+
+@test
+fn test_spans_cover_leaves_only() [io]
+    match tomledit.parse("[db]\nport = 5432\n[[p]]\nn = 1\n")
+        Ok(d)  =>
+            test.case("a table has no span of its own")
+            test.assert(tomledit.span_of(d, "db") == None)
+
+            test.case("nor does an array of tables")
+            test.assert(tomledit.span_of(d, "p") == None)
+
+            test.case("and a path that does not parse has no position")
+            test.assert(tomledit.position_of(d, "db..port") == (0 - 1, 0 - 1))
+
+            test.case("an edit is a change until it is undone")
+            match tomledit.set(d, "db.port", TomlInt(1))
+                Ok(changed) =>
+                    test.assert(not tomledit.is_unchanged(changed))
+                    match tomledit.set(changed, "db.port", TomlInt(5432))
+                        Ok(back) => test.assert(tomledit.is_unchanged(back))
+                        Err(_)   => test.fail("db.port is a key")
+                Err(_)      => test.fail("db.port is a key")
+
+        Err(_) => test.fail("the fixture is a TOML document")
+
+    test.case("an edit that would break the document is refused by the parse after it")
+    let broken = TomlEdit { text: "a = = 1\n",
+        original: "",
+        value: tomlnode.empty_table(),
+        spans: [],
+        paths: [] }
+    match tomledit.set(broken, "a", TomlInt(1))
+        Ok(_)  => test.fail("the text does not parse")
+        Err(e) => test.assert(tomlerror.line_of(e) == 1)
+    match tomledit.remove(broken, "a")
+        Ok(_)  => test.fail("the text does not parse")
+        Err(e) => test.assert(tomlerror.line_of(e) == 1)

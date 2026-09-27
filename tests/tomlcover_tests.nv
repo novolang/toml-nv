@@ -1,17 +1,9 @@
 // tomlcover_tests.nv — the rest of the public surface, one case each.
 //
-// RED ON PURPOSE, like every suite here: each assertion reaches `not
-// implemented: toml-nv.<module>.<fn>`.
-//
-// The three suites beside this one assert the DESIGN — the laws the
-// package is built around.  This one exists so that no public function
-// ships without a written expectation of what it answers, including
-// the ones whose behaviour is a single sentence.  Splitting them out
-// keeps the design suites readable rather than padding them with
-// twenty one-line cases.
-//
-// Everything here goes through `match` rather than `!`: the assertion
-// is usually about WHICH arm comes back, and the arm is the answer.
+// The suites beside this one assert the rules the package is built
+// around.  This one gives every remaining public function a written
+// expectation, including the ones whose behaviour is one sentence.
+// Each case matches on the answer, because the arm is the assertion.
 
 use std.test
 use civil
@@ -149,15 +141,12 @@ fn test_parse_bytes_checks_utf8_rather_than_assuming_it() [io]
 
 @test
 fn test_read_all_is_charged_what_the_stream_costs_and_not_more() [io]
-    // THE ONE THING THIS SUITE PROVES BEFORE ANY BODY EXISTS.
-    // `read_all<S: Read[e]>` binds the trait's effect parameter and
-    // its clause is `[e]`; the standard library declares
-    // `impl Read[] for Buffer`, so at this call site `[e]` substitutes
-    // to nothing and this function's row stays `[io]` — for the
-    // `println` inside `test.case`, and for nothing else.  A signature
-    // that had SPENT `[io, fs]` instead of binding would not compile
-    // here, which is the assertion, and the compiler makes it with
-    // every body still a `todo()`.
+    // `read_all<S: Read[e]>` binds the trait's effect parameter and its
+    // clause is `[e]`.  The standard library declares
+    // `impl Read[] for Buffer`, so at this call site `[e]` is nothing
+    // and this test's row stays `[io]`, for the `println` inside
+    // `test.case`.  A signature that spent `[io, fs]` would not compile
+    // here.
     test.case("read_all over an in-memory Buffer")
     let src = Buffer.from_str("a = 1\n")
     match tomlread.read_all(src)

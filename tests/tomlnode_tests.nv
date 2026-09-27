@@ -1,15 +1,8 @@
-// tomlnode_tests.nv — the API suite for the value tree.
+// tomlnode_tests.nv — the suite for the value tree.
 //
-// RED ON PURPOSE, like every suite in this package: the bodies are
-// `todo()`, so each assertion reaches `not implemented:
-// toml-nv.tomlnode.<fn>`.  `novo test tests/tomlnode_tests.nv
-// --isolate` gives every `@test` its own process and prints which
-// function each one stopped at, which is the readable form of an
-// interface package's verdict.
-//
-// What is asserted is the CONTRACT.  The trees below are built by
-// hand rather than parsed, so the value-level laws can be pinned down
-// before a parser exists.
+// The trees are built by hand rather than parsed, so the value-level
+// rules stand on their own: which arm each form is, the names an error
+// message quotes, and equality that minds the order of a table.
 
 use std.test
 use civil
