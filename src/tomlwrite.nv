@@ -1,43 +1,33 @@
 // tomlwrite.nv — the writer that preserves nothing.
 //
-// TWO WRITERS, AND WHY THAT IS NOT ONE TOO MANY
+// This module renders a `TomlValue` and keeps nothing that was not in
+// it: comments, blank lines, whether a table was a header or inline,
+// whether a string was basic or literal.  What comes out is canonical,
+// so the same tree always renders the same bytes.  That is what a
+// program generating a file wants: a lock file, a manifest a scaffold
+// writes, a fixture.
 //
-// This module renders a `TomlValue` and throws away everything that
-// was not in it: comments, key order beyond the tree's own, blank
-// lines, whether a table was a header or an inline one, whether a
-// string was basic or literal.  What comes out is CANONICAL — the same
-// tree always renders the same bytes — and that is exactly what a
-// program GENERATING a file wants: a lock file, a manifest a scaffold
-// writes, a fixture, a `--json`-to-`--toml` conversion.
+// A program editing a file a person maintains wants `tomledit`
+// instead.  Through this writer, a tool that changes one version number
+// hands the person a difference on every line, with their comments
+// gone.
 //
-// It is exactly what a program EDITING a file must not use.  A tool
-// that reads a person's `novo.toml`, changes a version number and
-// writes it back through here hands them a diff touching every line
-// and a file with their comments gone.  `tomledit` is that path, and
-// the split is the whole reason there are two modules: one type that
-// tried to do both would have to keep the trivia, and then the
-// canonical writer would be a lossy operation on a lossless type
-// rather than the only operation on a lossy one.
+// The tree's order is the document's order, and it is kept: a key is
+// never moved.  A table or an array of tables becomes a header only
+// when every key after it in its table can become one too, because a
+// `key = value` line after a header would belong to the header's table.
+// A table that cannot become a header is written inline.  So
+// `parse |> to_string |> parse` gives back an equal tree.
 //
-// A LIBRARY DOES NOT PRINT
-//
-// Every function here returns a `Str` or appends to a `StrBuf` the
-// caller owns.  Nothing opens a file and nothing writes to a console:
-// `docs/publishing.md` § Design is explicit that a library returns the
-// text or takes the writer, and this package has no effects with which
-// to do otherwise even if it wanted to.
-//
-// WHAT THE STYLE DOES NOT LET YOU CHOOSE
-//
-// `TomlStyle` has four fields and there is a reason each of the
-// obvious fifth ones is missing.  There is no "quote style" choice,
-// because a basic string with the escapes TOML requires is always
-// valid and a literal string is not always available.  There is no
-// "always inline" flag, because an inline table may not span a line
-// and a deep tree would produce one unreadable line rather than a
-// document.  And there is no key ordering: the tree's order IS the
-// document's order, and a writer that sorted would make
-// `parse |> to_string |> parse` stop being the identity it is.
+// Every function here answers a `Str` or `Bytes`; nothing is written
+// anywhere.
+
+use std.bytes
+use std.math
+use std.str
+use iso8601
+use tomlnode
+use tomlparse
 
 // How a canonical document is spelled.
 //
@@ -52,28 +42,21 @@
 //     println("${s.indent}")                    // 0
 // ```
 pub struct TomlStyle
-    // Spaces of indentation per level of nested `[table.header]`.
-    // `0` — the standard — leaves headers and keys flush left, which
-    // is what TOML documents in the wild look like.  A positive value
-    // indents the keys under each header, which some generated files
-    // prefer.
+    // Spaces of indentation per level of header.  A header is
+    // indented by its depth less one and the keys under it by its
+    // depth, so `0`, the standard, leaves everything flush left.
     indent: Int
-    // Render an array on one line while it fits in this many columns,
-    // and one item per line when it does not.  `0` means never wrap.
-    // A column budget rather than an item count because what makes an
-    // array unreadable is its width, and a `[1, 2, 3, …]` of forty
-    // small integers reads better in one line than forty.
+    // Write an array on one line while its line fits in this many
+    // columns, and one item per line when it does not.  `0` means never
+    // wrap.  Only the outermost array of a key wraps.
     array_width: Int
-    // Emit a blank line before each `[table]` header.  `true` in the
-    // standard style: it is the one piece of whitespace that is
-    // structural rather than decorative, because without it a header
-    // reads as belonging to the keys above it.
+    // Write a blank line before each header that is not the first
+    // line of the document.  `true` in the standard style.
     blank_before_table: Bool
-    // Prefer `[table]` headers over inline tables for nested tables.
-    // `true` in the standard style.  When `false`, a table nested
-    // inside an ARRAY still becomes a header — `[[array.of.tables]]` —
-    // because an inline table may not contain a newline and the
-    // alternative for a large one is a line nobody can read.
+    // Write a nested table as a `[header]` rather than inline.  `true`
+    // in the standard style.  An array of tables is written as
+    // `[[header]]`s either way.  Either way, a table is written inline
+    // when a plain key follows it in its table, so that no key moves.
     prefer_headers: Bool
 
 // The style TOML's own specification writes its examples in: no
@@ -89,13 +72,13 @@ pub struct TomlStyle
 //     println(tomlwrite.to_string(doc, tomlwrite.standard())!)
 // ```
 pub fn standard() -> TomlStyle
-    todo("toml-nv.tomlwrite.standard")
+    TomlStyle { indent: 0, array_width: 80, blank_before_table: true, prefer_headers: true }
 
-// The most compact valid spelling: no indentation, no wrapping, no
-// blank lines, inline tables wherever they fit on a line.
+// The most compact style: no indentation, no wrapping, no blank lines,
+// and nested tables inline.
 //
-// For a generated file nobody reads — a cache, a lock file, a value
-// written to a socket — where bytes matter more than the diff.
+// For a generated file nobody reads, such as a cache or a value written
+// to a socket.
 //
 // ```novo
 // use tomlwrite
@@ -104,18 +87,17 @@ pub fn standard() -> TomlStyle
 //     println("${tomlwrite.compact().blank_before_table}")   // false
 // ```
 pub fn compact() -> TomlStyle
-    todo("toml-nv.tomlwrite.compact")
+    TomlStyle { indent: 0, array_width: 0, blank_before_table: false, prefer_headers: false }
 
 // Render a document.
 //
-// `v` must be a `TomlTable` — a TOML document is a table, and there is
-// no document whose top level is an integer.  Anything else is
-// `WrongType` with the path `""`, which is how this module names the
-// root.
+// `v` must be a `TomlTable`, because a TOML document is a table.
+// Anything else is `WrongType` with the path `""`, which is how this
+// module names the root.  A tree `check` refuses is refused here with
+// the same error.
 //
-// The result always ends in exactly one newline, whatever the tree
-// looked like, because a text file that does not is a text file every
-// tool complains about.
+// The result always ends in exactly one line ending; an empty table is
+// a line ending and nothing else.
 //
 // ```novo
 // use tomlread
@@ -126,13 +108,16 @@ pub fn compact() -> TomlStyle
 //     print(tomlwrite.to_string(doc, tomlwrite.standard())!)
 // ```
 pub fn to_string(v: TomlValue, style: TomlStyle) -> Result<Str, TomlError>
-    todo("toml-nv.tomlwrite.to_string")
+    if let Some(e) = check(v)
+        return Err(e)
+    var out = ""
+    if let TomlTable(pairs) = v
+        out = body(pairs, [], style, "")
+    Ok(out + "\n")
 
 // Render a document as bytes.
 //
-// UTF-8, which is the only encoding a TOML document has.  It is here
-// so that a caller writing to a socket or a file does not convert a
-// string it is about to convert back.
+// UTF-8, the only encoding a TOML document has.
 //
 // ```novo
 // use tomlread
@@ -144,16 +129,14 @@ pub fn to_string(v: TomlValue, style: TomlStyle) -> Result<Str, TomlError>
 //     println("${bytes.len(b)}")
 // ```
 pub fn to_bytes(v: TomlValue, style: TomlStyle) -> Result<Bytes, TomlError>
-    todo("toml-nv.tomlwrite.to_bytes")
+    Ok(bytes.from_str(to_string(v, style)!))
 
-// Render ONE value, as it would appear on the right of an `=`.
+// Render one value, as it would appear on the right of an `=`.
 //
-// A string comes back quoted and escaped, an array bracketed, a table
-// inline.  It is what a `--set` flag echoes back, what an error
-// message quotes, and what a caller assembling a line by hand needs.
-// A table too deep to be inline is still rendered inline here — this
-// function has no document to put a header in — so a caller rendering
-// a large tree wants `to_string`.
+// A string comes back as a basic string with the escapes TOML
+// requires, an array on one line, a table inline, a float with a point
+// or an exponent, and a date-time in RFC 3339 spelling with `Z` for an
+// offset of zero.  `tomledit.set` writes new values with this.
 //
 // ```novo
 // use tomlwrite
@@ -163,10 +146,24 @@ pub fn to_bytes(v: TomlValue, style: TomlStyle) -> Result<Bytes, TomlError>
 //     println(tomlwrite.value_to_string(TomlStr("a\nb")))    // "a\nb"
 // ```
 pub fn value_to_string(v: TomlValue) -> Str
-    todo("toml-nv.tomlwrite.value_to_string")
+    match v
+        TomlTable(pairs)            => inline_table(pairs)
+        TomlArray(items)            =>
+            var parts: [Str] = []
+            for x in items
+                list.push(parts, value_to_string(x))
+            "[" + str.join(parts, ", ") + "]"
+        TomlStr(text)               => tomlparse.basic_quoted(text)
+        TomlInt(n)                  => "${n}"
+        TomlFloat(f)                => float_text(f)
+        TomlBool(b)                 => str.from_bool(b)
+        TomlOffsetDateTime(dt, off) => iso8601.format_rfc3339(dt, off)
+        TomlLocalDateTime(dt)       => iso8601.format_datetime(dt)
+        TomlLocalDate(d)            => iso8601.format_date(d)
+        TomlLocalTime(t)            => iso8601.format_time(t)
 
-// A key rendered as a document would spell it: bare when TOML's bare
-// key grammar allows it, quoted and escaped when it does not.
+// A key written as a document spells it: bare when every byte is an
+// ASCII letter, a digit, `_` or `-`, and a basic string otherwise.
 //
 // ```novo
 // use tomlwrite
@@ -176,25 +173,17 @@ pub fn value_to_string(v: TomlValue) -> Str
 //     println(tomlwrite.key_to_string("a b"))   // "a b"
 // ```
 pub fn key_to_string(key: Str) -> Str
-    todo("toml-nv.tomlwrite.key_to_string")
+    tomlparse.key_text(key)
 
 // Whether a tree can be written as a TOML document at all, and why
 // not.
 //
-// `to_string` runs this first, so calling it separately is for a
-// caller that wants to fail early — an editor validating as you type,
-// a builder checking a tree before it commits to it.  The three ways a
-// tree can be unwritable:
-//
-//   - the root is not a table (`WrongType`);
-//   - a table has the same key twice (`DuplicateKey`, with `line` and
-//     `first_line` both `-1`, because a tree has no lines);
-//   - a `TomlFloat` holds a `nan` or an `inf` a caller asked to be
-//     rejected — it does not, TOML has spellings for both, and this
-//     bullet is here to say so rather than to leave a reader guessing.
-//
-// A tree that came out of `tomlread.parse` always passes, which is
-// what makes the round trip total.
+// `to_string` runs this first.  A tree cannot be written when its root
+// is not a table (`WrongType`), or when a table under it, in an array
+// or not, has the same key twice (`DuplicateKey`, with the line, the
+// column and `first_line` all `-1`, because a tree has no lines).  A
+// `nan` or an `inf` is not a fault: TOML has spellings for both.  A
+// tree that came out of `tomlread.parse` always passes.
 //
 // ```novo
 // use tomlwrite
@@ -206,4 +195,140 @@ pub fn key_to_string(key: Str) -> Str
 //         None    => println("writable")
 // ```
 pub fn check(v: TomlValue) -> ?TomlError
-    todo("toml-nv.tomlwrite.check")
+    if tomlnode.type_of(v) != TypeTable
+        return Some(WrongType("", "table", tomlnode.type_name(v)))
+    duplicate_in(v, [])
+
+// The lines of a table's body, without the final line ending.  `path`
+// is the table's own path and `out` the text written so far, which
+// says whether a header needs a blank line before it.
+fn body(pairs: [TomlPair], path: [Str], style: TomlStyle, out: Str) -> Str
+    var text = out
+    let n = list.len(pairs)
+    var split = n
+    for _ in 0..n
+        if split == 0 or not headed(pairs[split - 1].value, style)
+            break
+        split = split - 1
+    let pad = str.repeat(" ", style.indent * list.len(path))
+    for k in 0..split
+        text = line_after(text, pad + pair_line(pairs[k], style, pad))
+    for k in split..n
+        var here = path[:]
+        list.push(here, pairs[k].key)
+        text = section(pairs[k].value, here, style, text)
+    text
+
+// A header, or the headers of an array of tables, and what is under
+// them.  `v` is a table or an array of tables.  A table holding only
+// tables needs no header of its own.
+fn section(v: TomlValue, path: [Str], style: TomlStyle, out: Str) -> Str
+    var text = out
+    let pad = str.repeat(" ", style.indent * (list.len(path) - 1))
+    if let TomlTable(pairs) = v
+        if has_plain(pairs, style) or list.len(pairs) == 0
+            text = header_line(text, pad + "[" + tomlparse.path_text(path) + "]", style)
+        return body(pairs, path, style, text)
+    if let TomlArray(items) = v
+        for item in items
+            text = header_line(text, pad + "[[" + tomlparse.path_text(path) + "]]", style)
+            if let TomlTable(pairs) = item
+                text = body(pairs, path, style, text)
+    text
+
+// Whether a table has a key that is written as `key = value` rather
+// than as a header of its own.
+fn has_plain(pairs: [TomlPair], style: TomlStyle) -> Bool
+    for pr in pairs
+        if not headed(pr.value, style)
+            return true
+    false
+
+// Whether a value in a table's tail is written under a header: an
+// array of tables always, a table when the style prefers headers.
+fn headed(v: TomlValue, style: TomlStyle) -> Bool
+    if tomlnode.type_of(v) == TypeTable
+        return style.prefer_headers
+    is_array_of_tables(v)
+
+fn is_array_of_tables(v: TomlValue) -> Bool
+    if let TomlArray(items) = v
+        if list.len(items) == 0
+            return false
+        for x in items
+            if tomlnode.type_of(x) != TypeTable
+                return false
+        return true
+    false
+
+fn line_after(text: Str, line: Str) -> Str
+    if text == ""
+        return line
+    text + "\n" + line
+
+// A header line, after a blank line when the style asks for one and
+// something was written before it.
+fn header_line(text: Str, line: Str, style: TomlStyle) -> Str
+    if text == ""
+        return line
+    if style.blank_before_table
+        return text + "\n\n" + line
+    text + "\n" + line
+
+// `key = value`, with a long array wrapped one item per line.
+fn pair_line(pr: TomlPair, style: TomlStyle, pad: Str) -> Str
+    let prefix = tomlparse.key_text(pr.key) + " = "
+    let one = value_to_string(pr.value)
+    if let TomlArray(items) = pr.value
+        let fits = style.array_width == 0 or str.len(pad) + str.len(prefix) + str.len(one) <= style.array_width
+        if not fits and list.len(items) > 0
+            var lines = prefix + "["
+            for x in items
+                lines = lines + "\n" + pad + "    " + value_to_string(x) + ","
+            return lines + "\n" + pad + "]"
+    prefix + one
+
+// `{ key = value, … }`, or `{}`.
+fn inline_table(pairs: [TomlPair]) -> Str
+    if list.len(pairs) == 0
+        return "{}"
+    var parts: [Str] = []
+    for pr in pairs
+        list.push(parts, tomlparse.key_text(pr.key) + " = " + value_to_string(pr.value))
+    "{ " + str.join(parts, ", ") + " }"
+
+// A float as TOML spells it: `inf`, `-inf` and `nan` for the special
+// values, and otherwise the shortest decimal that reads back as the
+// same value, with `.0` added when it has neither a point nor an
+// exponent, because TOML reads `2` as an integer.
+fn float_text(f: Float) -> Str
+    if math.is_nan(f)
+        return "nan"
+    if f > 1.7976931348623157e308
+        return "inf"
+    if f < 0.0 - 1.7976931348623157e308
+        return "-inf"
+    let t = "${f}"
+    if str.contains(t, ".") or str.contains(t, "e") or str.contains(t, "E")
+        return t
+    t + ".0"
+
+// The first key defined twice in any table under `v`, or `None`.
+fn duplicate_in(v: TomlValue, path: [Str]) -> ?TomlError
+    match v
+        TomlTable(pairs) =>
+            for i in 0..list.len(pairs)
+                var here = path[:]
+                list.push(here, pairs[i].key)
+                for j in 0..i
+                    if pairs[j].key == pairs[i].key
+                        return Some(DuplicateKey(0 - 1, 0 - 1, tomlparse.path_text(here), 0 - 1))
+                if let Some(e) = duplicate_in(pairs[i].value, here)
+                    return Some(e)
+            None
+        TomlArray(items) =>
+            for x in items
+                if let Some(e) = duplicate_in(x, path)
+                    return Some(e)
+            None
+        _                => None
