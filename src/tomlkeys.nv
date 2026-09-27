@@ -1,40 +1,35 @@
 // tomlkeys.nv — reaching into a parsed document by key and by path.
 //
-// TWO CHANNELS, AND WHICH ONE TO USE
+// Every lookup comes in two forms, and they answer different questions:
 //
-// Every lookup here comes in two forms and they answer different
-// questions:
-//
-//   `get`, `str_at`, `int_at`, …  ->  Result<T, TomlError>
+//   `get`, `str_at`, `int_at`, …    ->  Result<T, TomlError>
 //   `find`, `opt_str`, `opt_int`, …  ->  ?T
 //
-// The `Result` form is for a caller reading a REQUIRED setting: it
-// distinguishes `NoSuchKey("db.port")` from `WrongType("db.port",
-// "integer", "string")`, which are two different sentences to show a
-// user and two different fixes.  The `?T` form is for an OPTIONAL one,
-// where "absent" and "the wrong shape" both mean "use the default" and
-// carrying a reason nobody reads is ceremony.  Offering only the first
-// makes optional settings verbose; offering only the second makes
-// required settings undebuggable.  Both, and the name says which.
+// The `Result` form is for a required setting.  It tells
+// `NoSuchKey("db.port")` from `WrongType("db.port", "integer",
+// "string")`, two different sentences to show a user and two different
+// fixes.  The optional form is for a setting with a default, where
+// "absent" and "the wrong shape" both mean "use the default".
 //
-// DOTTED PATHS ARE THE SAME LANGUAGE THE DOCUMENT USES
-//
+// A dotted path is written the way the document writes keys:
 // `"servers.alpha.port"` walks tables the way `[servers.alpha]` builds
-// them, and the quoting rules are TOML's: `a."b.c"` is two segments
-// with a dot inside the second, `a.b.c` is three.  So a path a person
-// copies out of the file works, which is the point.  `path_segments`
-// is the split on its own, for a caller that would rather walk itself.
+// them, and `a."b.c"` is two segments with a dot inside the second.  A
+// path copied out of the file works.  `path_segments` is the split on
+// its own.
 //
-// An ARRAY index is not part of the path language.  `a.0` looks like
-// it should mean the first element and does not — `0` is a perfectly
-// legal bare key, TOML has no index syntax, and a path language that
-// invented one would make `a.0` ambiguous in a format where it is not.
-// `at` takes an index as an argument instead.
+// An array index is not part of the path language.  `0` is a legal
+// bare key and TOML has no index syntax, so `a.0` names the key `0` of
+// the table `a`.  `at` takes an index as an argument instead.
 
 use civil
 use tomlnode
+use tomlparse
 
 // The value at a dotted path, or why not.
+//
+// `NoSuchKey` names the path as the caller wrote it.  A path through a
+// value that is not a table is `WrongType`, naming the part of the path
+// that holds the value.
 //
 // ```novo
 // use tomlread
@@ -47,9 +42,20 @@ use tomlnode
 //         Err(e) => println(e.message())
 // ```
 pub fn get(v: TomlValue, path: Str) -> Result<TomlValue, TomlError>
-    todo("toml-nv.tomlkeys.get")
+    let segs = path_segments(path)!
+    var cur = v
+    for i in 0..list.len(segs)
+        if tomlnode.type_of(cur) != TypeTable
+            return Err(WrongType(tomlparse.path_text(segs[0:i]), "table", tomlnode.type_name(cur)))
+        match child(cur, segs[i])
+            Some(next) =>
+                cur = next
+            None       =>
+                return Err(NoSuchKey(path))
+    Ok(cur)
 
-// The value at a dotted path, or `None`.
+// The value at a dotted path, or `None` for every reason `get` would
+// give.
 //
 // ```novo
 // use tomlread
@@ -62,7 +68,9 @@ pub fn get(v: TomlValue, path: Str) -> Result<TomlValue, TomlError>
 //         None    => println("unset")
 // ```
 pub fn find(v: TomlValue, path: Str) -> ?TomlValue
-    todo("toml-nv.tomlkeys.find")
+    match get(v, path)
+        Ok(x)  => Some(x)
+        Err(_) => None
 
 // Whether a path resolves.
 //
@@ -75,12 +83,12 @@ pub fn find(v: TomlValue, path: Str) -> ?TomlValue
 //     println("${tomlkeys.has(doc, "db.port")}")     // true
 // ```
 pub fn has(v: TomlValue, path: Str) -> Bool
-    todo("toml-nv.tomlkeys.has")
+    find(v, path) != None
 
 // One key of one table, with no path walking at all.
 //
-// The primitive `get` is written in terms of, and the call for a
-// caller whose key contains a dot it does not want interpreted.
+// For a caller whose key contains a dot it does not want read as a
+// separator.  `None` for a value that is not a table.
 //
 // ```novo
 // use tomlread
@@ -93,13 +101,18 @@ pub fn has(v: TomlValue, path: Str) -> Bool
 //         None    => println("no")
 // ```
 pub fn child(v: TomlValue, key: Str) -> ?TomlValue
-    todo("toml-nv.tomlkeys.child")
+    match v
+        TomlTable(pairs) =>
+            let at = index_of_key(pairs, key)
+            if at < 0
+                return None
+            Some(pairs[at].value)
+        _                => None
 
 // One element of an array, by 0-based index.
 //
-// `None` past the end, `None` for a negative index, and `None` for a
-// value that is not an array — three absences that a caller indexing
-// an array handles the same way.
+// `None` past the end, for a negative index, and for a value that is
+// not an array.
 //
 // ```novo
 // use tomlread
@@ -113,13 +126,16 @@ pub fn child(v: TomlValue, key: Str) -> ?TomlValue
 //         None    => println("no")
 // ```
 pub fn at(v: TomlValue, index: Int) -> ?TomlValue
-    todo("toml-nv.tomlkeys.at")
+    if let TomlArray(items) = v
+        if index >= 0 and index < list.len(items)
+            return Some(items[index])
+    None
 
 // A dotted path split into its segments, with TOML's quoting applied.
 //
-// `"a.\"b.c\".d"` is `["a", "b.c", "d"]`.  A malformed path — an
-// unclosed quote, an empty segment — is `BadKey` with the column
-// within the PATH, because there is no document position to give.
+// `"a.\"b.c\".d"` is `["a", "b.c", "d"]`.  A malformed path, such as
+// an unclosed quote or an empty segment, is `BadKey` at line 1 and the
+// column within the path.
 //
 // ```novo
 // use tomlkeys
@@ -129,15 +145,14 @@ pub fn at(v: TomlValue, index: Int) -> ?TomlValue
 //     println("${list.len(segs)}")              // 3
 // ```
 pub fn path_segments(path: Str) -> Result<[Str], TomlError>
-    todo("toml-nv.tomlkeys.path_segments")
+    tomlparse.parse_key_text(path)
 
 // Segments joined back into a dotted path, quoting the ones that need
 // it.
 //
-// The inverse of `path_segments`, and the function an error message
-// uses to name where it was: a segment containing a dot, a space or a
-// quote comes back quoted and escaped, so the result is a path
-// `path_segments` accepts and a person can paste.
+// The inverse of `path_segments`.  A segment holding anything but
+// ASCII letters, digits, `_` and `-` comes back quoted and escaped, so
+// the result is a path `path_segments` accepts and a person can paste.
 //
 // ```novo
 // use tomlkeys
@@ -146,13 +161,13 @@ pub fn path_segments(path: Str) -> Result<[Str], TomlError>
 //     println(tomlkeys.path_of(["a", "b.c"]))   // a."b.c"
 // ```
 pub fn path_of(segments: [Str]) -> Str
-    todo("toml-nv.tomlkeys.path_of")
+    tomlparse.path_text(segments)
 
 // Every path in a document, depth first, in document order.
 //
-// Leaves only: a table's own path is not listed, its keys' are.  It is
-// what a `--dump` flag prints, what a schema check walks, and what a
-// diff between two config files compares.
+// Leaves only: a table's own path is not listed, its keys' are, and an
+// array is one leaf.  It is what a `--dump` flag prints and what a diff
+// between two configuration files compares.
 //
 // ```novo
 // use tomlread
@@ -163,13 +178,15 @@ pub fn path_of(segments: [Str]) -> Str
 //     println(list.join(tomlkeys.paths(doc), " "))   // db.port
 // ```
 pub fn paths(v: TomlValue) -> [Str]
-    todo("toml-nv.tomlkeys.paths")
+    var out: [Str] = []
+    leaves(v, [], out)
+    out
 
 // The string at a path, or why not.
 //
-// `WrongType` when the path resolves to something else — the value is
-// NOT coerced.  A `port = 8080` read as a string is a mistake in the
-// caller or in the file, and returning `"8080"` would hide which.
+// `WrongType` when the path holds something else.  The value is not
+// coerced: `port = 8080` read as a string is a mistake in the caller or
+// in the file, and answering `"8080"` would hide which.
 //
 // ```novo
 // use tomlread
@@ -180,13 +197,14 @@ pub fn paths(v: TomlValue) -> [Str]
 //     println(tomlkeys.str_at(doc, "db.host")!)      // localhost
 // ```
 pub fn str_at(v: TomlValue, path: Str) -> Result<Str, TomlError>
-    todo("toml-nv.tomlkeys.str_at")
+    match get(v, path)!
+        TomlStr(s) => Ok(s)
+        other      => Err(WrongType(path, "string", tomlnode.type_name(other)))
 
 // The integer at a path, or why not.
 //
 // A `TomlFloat` is `WrongType` even when it is integral: `1.0` and `1`
-// are different literals in TOML and a config file that wrote the
-// first meant the first.
+// are different literals in TOML.
 //
 // ```novo
 // use tomlread
@@ -197,16 +215,15 @@ pub fn str_at(v: TomlValue, path: Str) -> Result<Str, TomlError>
 //     println("${tomlkeys.int_at(doc, "port")!}")    // 8080
 // ```
 pub fn int_at(v: TomlValue, path: Str) -> Result<Int, TomlError>
-    todo("toml-nv.tomlkeys.int_at")
+    match get(v, path)!
+        TomlInt(n) => Ok(n)
+        other      => Err(WrongType(path, "integer", tomlnode.type_name(other)))
 
 // The float at a path, or why not.
 //
-// A `TomlInt` IS accepted here and widened, which is the one asymmetry
-// in this module and it is deliberate: `timeout = 30` in a field
-// documented as seconds-with-fractions is a person writing a round
-// number, not a type error, and every TOML library in the world
-// accepts it.  `int_at` refusing a float is the other direction, where
-// the narrowing would lose something.
+// A `TomlInt` is accepted and widened.  This is the one asymmetry:
+// `timeout = 30` in a field of seconds with fractions is a round
+// number, not a type error.
 //
 // ```novo
 // use tomlread
@@ -217,7 +234,10 @@ pub fn int_at(v: TomlValue, path: Str) -> Result<Int, TomlError>
 //     println("${tomlkeys.float_at(doc, "timeout")!}")   // 30
 // ```
 pub fn float_at(v: TomlValue, path: Str) -> Result<Float, TomlError>
-    todo("toml-nv.tomlkeys.float_at")
+    match get(v, path)!
+        TomlFloat(f) => Ok(f)
+        TomlInt(n)   => Ok(n as Float)
+        other        => Err(WrongType(path, "float", tomlnode.type_name(other)))
 
 // The boolean at a path, or why not.
 //
@@ -230,7 +250,9 @@ pub fn float_at(v: TomlValue, path: Str) -> Result<Float, TomlError>
 //     println("${tomlkeys.bool_at(doc, "debug")!}")  // true
 // ```
 pub fn bool_at(v: TomlValue, path: Str) -> Result<Bool, TomlError>
-    todo("toml-nv.tomlkeys.bool_at")
+    match get(v, path)!
+        TomlBool(b) => Ok(b)
+        other       => Err(WrongType(path, "boolean", tomlnode.type_name(other)))
 
 // The array at a path, as its items.
 //
@@ -243,7 +265,9 @@ pub fn bool_at(v: TomlValue, path: Str) -> Result<Bool, TomlError>
 //     println("${list.len(tomlkeys.array_at(doc, "ports")!)}")   // 2
 // ```
 pub fn array_at(v: TomlValue, path: Str) -> Result<[TomlValue], TomlError>
-    todo("toml-nv.tomlkeys.array_at")
+    match get(v, path)!
+        TomlArray(items) => Ok(items[:])
+        other            => Err(WrongType(path, "array", tomlnode.type_name(other)))
 
 // The table at a path, as its pairs in document order.
 //
@@ -256,7 +280,9 @@ pub fn array_at(v: TomlValue, path: Str) -> Result<[TomlValue], TomlError>
 //     println("${list.len(tomlkeys.table_at(doc, "db")!)}")      // 1
 // ```
 pub fn table_at(v: TomlValue, path: Str) -> Result<[TomlPair], TomlError>
-    todo("toml-nv.tomlkeys.table_at")
+    match get(v, path)!
+        TomlTable(pairs) => Ok(pairs[:])
+        other            => Err(WrongType(path, "table", tomlnode.type_name(other)))
 
 // The string at a path, or `None`.
 //
@@ -269,7 +295,9 @@ pub fn table_at(v: TomlValue, path: Str) -> Result<[TomlPair], TomlError>
 //     println(tomlkeys.opt_str(doc, "db.host") ?? "127.0.0.1")
 // ```
 pub fn opt_str(v: TomlValue, path: Str) -> ?Str
-    todo("toml-nv.tomlkeys.opt_str")
+    match str_at(v, path)
+        Ok(x)  => Some(x)
+        Err(_) => None
 
 // The integer at a path, or `None`.
 //
@@ -282,7 +310,9 @@ pub fn opt_str(v: TomlValue, path: Str) -> ?Str
 //     println("${tomlkeys.opt_int(doc, "db.port") ?? 5432}")
 // ```
 pub fn opt_int(v: TomlValue, path: Str) -> ?Int
-    todo("toml-nv.tomlkeys.opt_int")
+    match int_at(v, path)
+        Ok(x)  => Some(x)
+        Err(_) => None
 
 // The float at a path, or `None`.  Widens an integer, as `float_at`
 // does.
@@ -296,7 +326,9 @@ pub fn opt_int(v: TomlValue, path: Str) -> ?Int
 //     println("${tomlkeys.opt_float(doc, "timeout") ?? 5.0}")
 // ```
 pub fn opt_float(v: TomlValue, path: Str) -> ?Float
-    todo("toml-nv.tomlkeys.opt_float")
+    match float_at(v, path)
+        Ok(x)  => Some(x)
+        Err(_) => None
 
 // The boolean at a path, or `None`.
 //
@@ -309,14 +341,15 @@ pub fn opt_float(v: TomlValue, path: Str) -> ?Float
 //     println("${tomlkeys.opt_bool(doc, "log.debug") ?? false}")
 // ```
 pub fn opt_bool(v: TomlValue, path: Str) -> ?Bool
-    todo("toml-nv.tomlkeys.opt_bool")
+    match bool_at(v, path)
+        Ok(x)  => Some(x)
+        Err(_) => None
 
 // The offset date-time at a path: the civil parts and minutes east of
 // UTC.
 //
 // Only `TomlOffsetDateTime` answers.  A local date-time is
-// `WrongType`, because a caller that asked for an offset needs one and
-// a package that supplied `0` would have invented UTC.
+// `WrongType`: supplying `0` would invent UTC.
 //
 // ```novo
 // use tomlread
@@ -328,13 +361,14 @@ pub fn opt_bool(v: TomlValue, path: Str) -> ?Bool
 //     println("${off}")                         // 0
 // ```
 pub fn offset_datetime_at(v: TomlValue, path: Str) -> Result<(civil.CivilDateTime, Int), TomlError>
-    todo("toml-nv.tomlkeys.offset_datetime_at")
+    match get(v, path)!
+        TomlOffsetDateTime(dt, off) => Ok((dt, off))
+        other                       => Err(WrongType(path, "offset date-time", tomlnode.type_name(other)))
 
 // The local date-time at a path.
 //
-// Only `TomlLocalDateTime` answers; an offset date-time is
-// `WrongType`, because dropping the offset silently is how a
-// timestamp moves by two hours between one program and the next.
+// Only `TomlLocalDateTime` answers.  An offset date-time is
+// `WrongType`, because dropping the offset would move the timestamp.
 //
 // ```novo
 // use tomlread
@@ -346,7 +380,9 @@ pub fn offset_datetime_at(v: TomlValue, path: Str) -> Result<(civil.CivilDateTim
 //     println("ok")
 // ```
 pub fn local_datetime_at(v: TomlValue, path: Str) -> Result<civil.CivilDateTime, TomlError>
-    todo("toml-nv.tomlkeys.local_datetime_at")
+    match get(v, path)!
+        TomlLocalDateTime(dt) => Ok(dt)
+        other                 => Err(WrongType(path, "local date-time", tomlnode.type_name(other)))
 
 // The local date at a path.
 //
@@ -360,7 +396,9 @@ pub fn local_datetime_at(v: TomlValue, path: Str) -> Result<civil.CivilDateTime,
 //     println("ok")
 // ```
 pub fn date_at(v: TomlValue, path: Str) -> Result<civil.CivilDate, TomlError>
-    todo("toml-nv.tomlkeys.date_at")
+    match get(v, path)!
+        TomlLocalDate(d) => Ok(d)
+        other            => Err(WrongType(path, "local date", tomlnode.type_name(other)))
 
 // The local time at a path.
 //
@@ -374,23 +412,22 @@ pub fn date_at(v: TomlValue, path: Str) -> Result<civil.CivilDate, TomlError>
 //     println("ok")
 // ```
 pub fn time_at(v: TomlValue, path: Str) -> Result<civil.CivilTime, TomlError>
-    todo("toml-nv.tomlkeys.time_at")
+    match get(v, path)!
+        TomlLocalTime(t) => Ok(t)
+        other            => Err(WrongType(path, "local time", tomlnode.type_name(other)))
 
 // A copy of the document with the value at a path replaced or added.
 //
-// A NEW tree: `[mutate]` is a host effect and this package has none,
-// so nothing here changes a value in place.  Missing intermediate
-// tables are created, in the order the path names them, and appended
-// at the end of their parent.  A path whose intermediate segment
-// resolves to a NON-table is `WrongType` rather than an overwrite,
-// because silently replacing `a = 1` when told to set `a.b` is how a
-// configuration loses a setting.
+// The answer is a new tree; the one given is unchanged.  Missing
+// intermediate tables are created, in the order the path names them,
+// and appended at the end of their parent.  An intermediate segment
+// that holds something other than a table is `WrongType` rather than
+// an overwrite, because replacing `a = 1` when told to set `a.b` loses
+// a setting.  A root that is not a table is `WrongType` with the path
+// `""`.
 //
-// It is here for the tools that write config files — an installer, a
-// `novo pkg` subcommand, a migration.  A tool that wants the comments
-// back too wants `tomledit` instead; this is the value-level set, and
-// what comes out of `tomlwrite.to_string` after it is a canonical
-// document with the old file's formatting gone.
+// A tool that wants a person's comments kept wants `tomledit`
+// instead.
 //
 // ```novo
 // use tomlread
@@ -403,14 +440,16 @@ pub fn time_at(v: TomlValue, path: Str) -> Result<civil.CivilTime, TomlError>
 //     println("${tomlkeys.int_at(next, "db.port")!}")    // 5433
 // ```
 pub fn set(v: TomlValue, path: Str, value: TomlValue) -> Result<TomlValue, TomlError>
-    todo("toml-nv.tomlkeys.set")
+    let segs = path_segments(path)!
+    if tomlnode.type_of(v) != TypeTable
+        return Err(WrongType("", "table", tomlnode.type_name(v)))
+    set_in(v, segs, 0, value)
 
 // A copy of the document with the value at a path removed.
 //
-// `NoSuchKey` when it was not there — a remove that silently succeeds
-// on a typo is a remove that never tells you about the typo.  Empty
-// tables left behind are left behind: pruning them would delete a
-// `[section]` header a person wrote on purpose.
+// `NoSuchKey` when it was not there, so a typo is reported.  An empty
+// table left behind stays: pruning it would delete a `[section]` a
+// person wrote on purpose.
 //
 // ```novo
 // use tomlread
@@ -422,23 +461,18 @@ pub fn set(v: TomlValue, path: Str, value: TomlValue) -> Result<TomlValue, TomlE
 //     println("${tomlkeys.has(next, "db.port")}")        // false
 // ```
 pub fn remove(v: TomlValue, path: Str) -> Result<TomlValue, TomlError>
-    todo("toml-nv.tomlkeys.remove")
+    let segs = path_segments(path)!
+    match removed(v, segs, 0)
+        Some(next) => Ok(next)
+        None       => Err(NoSuchKey(path))
 
 // A copy of `base` with every leaf of `overlay` written over it.
 //
-// Tables merge key by key, and everything else replaces whole — an
-// array in `overlay` replaces the array in `base` rather than
-// appending to it, because "the user's list of hosts plus the
-// default's" is a decision the caller makes and not one a merge should
-// make for them.  Keys only in `base` survive; keys only in `overlay`
-// are appended in `overlay`'s order.
-//
-// This is the function a layered configuration is written with:
-// defaults, then the system file, then the user's, then the
-// environment's.  `config-nv` is the package that will do the layering
-// with files in it; this is the arithmetic underneath, and it is here
-// because it belongs to the value tree rather than to the reading of
-// files.
+// Tables merge key by key, and everything else replaces whole: an
+// array in `overlay` replaces the array in `base` rather than being
+// appended to it.  Keys only in `base` survive; keys only in `overlay`
+// are appended in `overlay`'s order.  Either argument not being a
+// table is `WrongType` with the path `""`.
 //
 // ```novo
 // use tomlread
@@ -452,4 +486,89 @@ pub fn remove(v: TomlValue, path: Str) -> Result<TomlValue, TomlError>
 //     println(tomlkeys.str_at(m, "db.host")!)            // a
 // ```
 pub fn merge(base: TomlValue, overlay: TomlValue) -> Result<TomlValue, TomlError>
-    todo("toml-nv.tomlkeys.merge")
+    if tomlnode.type_of(base) != TypeTable
+        return Err(WrongType("", "table", tomlnode.type_name(base)))
+    if tomlnode.type_of(overlay) != TypeTable
+        return Err(WrongType("", "table", tomlnode.type_name(overlay)))
+    Ok(merged(base, overlay))
+
+// Every leaf path under `v`, depth first, written into `out`.
+fn leaves(v: TomlValue, above: [Str], var out: [Str])
+    if let TomlTable(pairs) = v
+        for pr in pairs
+            var here = above[:]
+            list.push(here, pr.key)
+            if tomlnode.type_of(pr.value) == TypeTable
+                leaves(pr.value, here, out)
+            else
+                list.push(out, path_of(here))
+
+// The table `t` with the value at `segs[i..]` set, creating the tables
+// on the way.  `t` is a table.
+fn set_in(t: TomlValue, segs: [Str], i: Int, value: TomlValue) -> Result<TomlValue, TomlError>
+    var pairs: [TomlPair] = []
+    if let TomlTable(ps) = t
+        pairs = ps[:]
+    let key = segs[i]
+    let last = i == list.len(segs) - 1
+    for k in 0..list.len(pairs)
+        if pairs[k].key == key
+            if last
+                pairs[k] = TomlPair { key: key, value: value }
+                return Ok(TomlTable(pairs))
+            let inner = pairs[k].value
+            if tomlnode.type_of(inner) != TypeTable
+                return Err(WrongType(path_of(segs[0:i + 1]), "table", tomlnode.type_name(inner)))
+            pairs[k] = TomlPair { key: key, value: set_in(inner, segs, i + 1, value)! }
+            return Ok(TomlTable(pairs))
+    if last
+        list.push(pairs, TomlPair { key: key, value: value })
+    else
+        list.push(pairs, TomlPair { key: key, value: set_in(tomlnode.empty_table(), segs, i + 1, value)! })
+    Ok(TomlTable(pairs))
+
+// `v` with the key at `segs[i..]` removed, or `None` when it is not
+// there.
+fn removed(v: TomlValue, segs: [Str], i: Int) -> ?TomlValue
+    if let TomlTable(ps) = v
+        var pairs = ps[:]
+        let last = i == list.len(segs) - 1
+        for k in 0..list.len(pairs)
+            if pairs[k].key == segs[i]
+                if last
+                    var rest: [TomlPair] = []
+                    for j in 0..list.len(pairs)
+                        if j != k
+                            list.push(rest, pairs[j])
+                    return Some(TomlTable(rest))
+                let Some(inner) = removed(pairs[k].value, segs, i + 1) else
+                    return None
+                pairs[k] = TomlPair { key: segs[i], value: inner }
+                return Some(TomlTable(pairs))
+    None
+
+// Two tables merged key by key, as `merge` describes.
+fn merged(base: TomlValue, overlay: TomlValue) -> TomlValue
+    var pairs: [TomlPair] = []
+    if let TomlTable(ps) = base
+        pairs = ps[:]
+    if let TomlTable(over) = overlay
+        for o in over
+            var at = 0 - 1
+            for k in 0..list.len(pairs)
+                if at < 0 and pairs[k].key == o.key
+                    at = k
+            if at < 0
+                list.push(pairs, o)
+            else if tomlnode.type_of(pairs[at].value) == TypeTable and tomlnode.type_of(o.value) == TypeTable
+                pairs[at] = TomlPair { key: o.key, value: merged(pairs[at].value, o.value) }
+            else
+                pairs[at] = o
+    TomlTable(pairs)
+
+// The index of the first pair with this key, or -1.
+fn index_of_key(pairs: [TomlPair], key: Str) -> Int
+    for i in 0..list.len(pairs)
+        if pairs[i].key == key
+            return i
+    0 - 1
