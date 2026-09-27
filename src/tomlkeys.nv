@@ -103,10 +103,10 @@ pub fn has(v: TomlValue, path: Str) -> Bool
 pub fn child(v: TomlValue, key: Str) -> ?TomlValue
     match v
         TomlTable(pairs) =>
-            let at = index_of_key(pairs, key)
-            if at < 0
-                return None
-            Some(pairs[at].value)
+            for p in pairs
+                if p.key == key
+                    return Some(p.value)
+            None
         _                => None
 
 // One element of an array, by 0-based index.
@@ -565,10 +565,3 @@ fn merged(base: TomlValue, overlay: TomlValue) -> TomlValue
             else
                 pairs[at] = o
     TomlTable(pairs)
-
-// The index of the first pair with this key, or -1.
-fn index_of_key(pairs: [TomlPair], key: Str) -> Int
-    for i in 0..list.len(pairs)
-        if pairs[i].key == key
-            return i
-    0 - 1
