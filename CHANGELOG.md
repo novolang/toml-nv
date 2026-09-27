@@ -45,7 +45,11 @@ canonical writer, and an editing document that keeps a file's bytes.
 ### Dependencies and toolchain
 
 - calendar-nv `^0.2.0`, its first implemented release.
-- The toolchain floor is 0.12.0.
+- The toolchain floor is 0.13.0. The bodies are written for it and use
+  no workaround: `tomlnode.equal` compares the scalar and date-time arms
+  with `==`, `tomlkeys.child` answers from inside the loop that finds
+  the key, and `read_all` returns a stream failure from inside its
+  read loop.
 
 ### Tests
 
