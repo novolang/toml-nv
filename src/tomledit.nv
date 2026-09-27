@@ -1,63 +1,48 @@
-// tomledit.nv — the formatter that preserves everything.
-//
-// THE PROBLEM THIS MODULE EXISTS FOR
+// tomledit.nv — the editor that preserves everything.
 //
 // A tool reads a person's `novo.toml`, changes one version number, and
-// writes it back.  Through `tomlwrite` that produces a diff touching
-// every line, with the comments gone and the sections reordered, and
-// the person's next `git diff` is unreadable.  That is not a
-// hypothetical: it is what `novo pkg add` does to a manifest, what a
-// dependency bot does to a lock file, and what an installer does to a
-// config file — and it is the single most common thing a TOML library
-// is asked for after parsing.
+// writes it back.  Through `tomlwrite` that is a difference on every
+// line, with the comments gone.  A `TomlEdit` is a document that keeps
+// its own bytes instead: every comment, every blank line, the spacing
+// around each `=`, the spelling of each string and whether each table
+// was a header or inline.  Setting a value rewrites the span that value
+// occupied and nothing else, and rendering a document nobody changed
+// gives back the input byte for byte.
 //
-// So `TomlEdit` is a document that remembers its own bytes.  Reading
-// one keeps every comment, every blank line, the spacing around each
-// `=`, whether a string was basic or literal, whether a table was a
-// header or inline, and the order everything appeared in.  Setting a
-// value rewrites the SPAN that value occupied and nothing else.
-// Rendering a document nobody changed gives back the input byte for
-// byte — which is the property the whole module is designed around,
-// and `is_unchanged` is how a caller can assert it.
+// It is a separate type from `TomlValue` because the two obey different
+// laws.  Two trees holding the same data are the same tree; two files
+// holding the same data with different comments are different files.
+// `value_of` is the bridge one way.  There is no `from_value`: a tree
+// has no layout to keep, and a document made from one is what
+// `tomlwrite.to_string` writes.
 //
-// WHY IT IS A SEPARATE TYPE AND NOT A FLAG ON `TomlValue`
+// Where a new key goes, and what is left alone:
 //
-// Because the two have different laws.  `TomlValue` is a value: two
-// trees that hold the same data ARE the same tree, and `tomlnode.equal`
-// says so.  A `TomlEdit` is a document: two files that hold the same
-// data with different comments are different files, and a type that
-// conflated them would make `equal` answer one of the two questions
-// and be wrong about the other.  Keeping trivia on `TomlValue` would
-// also make every consumer that just wants a config value carry bytes
-// it will never look at — including the embedded ones, where that is
-// the difference between fitting and not.
+// - An existing key keeps its line, its spacing and its trailing
+//   comment; only the value's bytes change.
+// - A new key in a table written as a `[header]`, or at the top level,
+//   goes on a new line after the last key of that section, with that
+//   key's indentation, or straight after the header when it has none.
+// - A new key in a table made by dotted keys goes into the section
+//   those keys are in, as a dotted key.
+// - A new key in an inline table goes before its `}`, after a comma.
+// - A new key two or more tables below the nearest existing one opens
+//   a new `[header]` at the end of the document.
 //
-// `value_of` is the bridge, one way.  There is no `from_value`,
-// because a tree has no trivia to preserve and a document made from
-// one is exactly `tomlwrite.to_string` — asking for it here would be
-// asking for the canonical writer under a name that promises
-// otherwise.
-//
-// WHAT "PRESERVES" DOES NOT PROMISE
-//
-// Setting a value rewrites that value's span.  It does NOT reflow the
-// line, re-wrap a long array, or move a comment that was on the same
-// line — the comment stays where it was, after the new value.  Setting
-// a key that does not exist appends it at the end of its table, after
-// the last key and before the next header, with the surrounding
-// document untouched.  Nothing here reformats anything a caller did
-// not name, which is the difference between an editor and a formatter,
-// and this module is the first.
+// Nothing is reformatted that a caller did not name.
 
+use std.bytes
+use std.str
 use tomlnode
+use tomlkeys
+use tomlwrite
+use tomlparse
 
 // A TOML document that remembers how it was written.
 //
-// Opaque: the fields are the spans and the source text, they are not
-// something a caller should reach into, and the module's functions are
-// the whole surface.  Carried by value like everything else in this
-// package — `[mutate]` is a host effect and there is none here, so
-// `set` returns a new document and the old one is still valid.
+// The fields are the source text and the spans of its values; the
+// module's functions are the way to read them.  Every change answers a
+// new document and leaves the old one as it was.
 //
 // ```novo
 // use tomledit
@@ -67,32 +52,27 @@ use tomlnode
 //     println("${tomledit.is_unchanged(d)}")    // true
 // ```
 pub struct TomlEdit
-    // The document as it currently stands.  After a `set` this is the
-    // rewritten text, not the original — `original` is the original.
+    // The document as it stands.  After a `set` this is the rewritten
+    // text; `original` is the text it was first parsed from.
     text: Str
-    // The text this document was parsed from, kept so that
-    // `is_unchanged` is a comparison and not a guess, and so that a
-    // caller can show a diff without having kept the input itself.
+    // The text this document was first parsed from, so that
+    // `is_unchanged` is a comparison.
     original: Str
-    // The parsed tree, in step with `text`.  Rebuilt on every edit,
-    // because an edit is rare and a stale tree is a bug that only
-    // shows up in the caller's output.
+    // The parsed tree, in step with `text`.  It is rebuilt on every
+    // edit.
     value: TomlValue
-    // Byte offsets into `text` of every leaf value, in the same
-    // depth-first order as `tomlkeys.paths`.  Two entries per leaf,
-    // start and end, flattened — a list of pairs would be a second
-    // public type carrying no information this one does not.
+    // Byte offsets into `text` of every leaf value that a dotted path
+    // can name, in the order of `tomlkeys.paths`: two entries per leaf,
+    // its start and its end.
     spans: [Int]
-    // The dotted path of each leaf, parallel to `spans`.  A lookup is
-    // a scan of this; a document with enough keys for that to matter
-    // is not a document a person edits.
+    // The dotted path of each of those leaves, in `tomlkeys.path_of`'s
+    // spelling, one per pair of `spans`.
     paths: [Str]
 
 // Parse a document, keeping everything.
 //
-// The same grammar as `tomlread.parse` and the same errors — a
-// document one refuses the other refuses, at the same position.  The
-// difference is only what is kept.
+// The same grammar as `tomlread.parse` and the same errors: a document
+// one refuses the other refuses, at the same position.
 //
 // ```novo
 // use tomledit
@@ -103,14 +83,12 @@ pub struct TomlEdit
 //         Err(e) => println(e.message())
 // ```
 pub fn parse(text: Str) -> Result<TomlEdit, TomlError>
-    todo("toml-nv.tomledit.parse")
+    make(text, text)
 
 // The document as text.
 //
-// Byte for byte the input, for a document nobody has edited.  That is
-// the load-bearing property of this module and it is worth stating as
-// a law rather than as a hope: `to_string(parse(s)!) == s` for every
-// `s` that parses.
+// Byte for byte the input, for a document nobody has edited:
+// `to_string(parse(s)!) == s` for every `s` that parses.
 //
 // ```novo
 // use tomledit
@@ -120,7 +98,7 @@ pub fn parse(text: Str) -> Result<TomlEdit, TomlError>
 //     println("${tomledit.to_string(tomledit.parse(s)!) == s}")   // true
 // ```
 pub fn to_string(d: TomlEdit) -> Str
-    todo("toml-nv.tomledit.to_string")
+    d.text
 
 // The document as bytes, UTF-8.
 //
@@ -132,14 +110,11 @@ pub fn to_string(d: TomlEdit) -> Str
 //     println("${bytes.len(tomledit.to_bytes(d))}")   // 6
 // ```
 pub fn to_bytes(d: TomlEdit) -> Bytes
-    todo("toml-nv.tomledit.to_bytes")
+    bytes.from_str(d.text)
 
 // The value tree, for reading.
 //
-// The bridge to `tomlkeys`: every lookup in that module takes a
-// `TomlValue`, and this is how an editing document supplies one.  The
-// trivia does not come with it, which is the point — a caller reading
-// `db.port` should not have to know the document had comments.
+// The bridge to `tomlkeys`, whose lookups take a `TomlValue`.
 //
 // ```novo
 // use tomledit
@@ -150,21 +125,20 @@ pub fn to_bytes(d: TomlEdit) -> Bytes
 //     println("${tomlkeys.int_at(tomledit.value_of(d), "db.port")!}")
 // ```
 pub fn value_of(d: TomlEdit) -> TomlValue
-    todo("toml-nv.tomledit.value_of")
+    d.value
 
 // Set the value at a dotted path, rewriting that span and nothing
 // else.
 //
 // An existing key keeps its line, its spacing and its trailing
-// comment; only the bytes between the `=` and the end of the value are
-// replaced.  A key that does not exist is appended at the end of its
-// table — after the last key, before the next header, with a newline
-// and the table's own indentation.  Missing intermediate tables are
-// created as `[headers]` at the end of the document, in path order.
+// comment; only the value's bytes are replaced.  A key that does not
+// exist is added where the module header says.  A new value is written
+// as `tomlwrite.value_to_string` writes it.
 //
-// `WrongType` when an intermediate segment resolves to a non-table,
-// which is the same refusal `tomlkeys.set` makes and for the same
-// reason: replacing `a = 1` when told to set `a.b` loses a setting.
+// `WrongType` when an intermediate segment holds something other than
+// a table, as `tomlkeys.set` refuses, and when the path names a table
+// written as a header or an array of tables, which has no single span
+// to replace.
 //
 // ```novo
 // use tomledit
@@ -176,19 +150,31 @@ pub fn value_of(d: TomlEdit) -> TomlValue
 //     print(tomledit.to_string(d2))         // [db]\nport = 5433  # the port\n
 // ```
 pub fn set(d: TomlEdit, path: Str, value: TomlValue) -> Result<TomlEdit, TomlError>
-    todo("toml-nv.tomledit.set")
+    let segs = tomlkeys.path_segments(path)!
+    let doc = tomlparse.parse_document(d.text, 64)!
+    let at = pair_index(doc, segs)
+    let text = tomlwrite.value_to_string(value)
+    if at >= 0
+        let r = doc.pairs[at]
+        return make(splice(d.text, r.value_start, r.value_end, text), d.original)
+    let n = list.len(segs)
+    let (k, reached) = deepest(d.value, segs)
+    if k == n
+        return Err(WrongType(path, tomlnode.type_name(value), tomlnode.type_name(reached)))
+    if tomlnode.type_of(reached) != TypeTable
+        return Err(WrongType(tomlparse.path_text(segs[0:k]), "table", tomlnode.type_name(reached)))
+    make(inserted(d.text, doc, segs[0:k], segs[k:n], text), d.original)
 
 // Remove the key at a dotted path, and the line it was on.
 //
-// The WHOLE line goes, its trailing comment with it, because a
-// trailing comment describes the key it follows and leaving it behind
-// orphaned is worse than either alternative.  A comment on its own
-// line ABOVE the key stays: this module cannot know whether it
-// described the key, the section, or the file, and deleting a person's
-// prose on a guess is not a thing a library should do.
+// The whole line goes, its trailing comment with it.  A comment on its
+// own line above the key stays, because it may describe the section
+// rather than the key.  A key inside an inline table goes with the
+// comma beside it.
 //
-// `NoSuchKey` when it was not there, and the empty table left behind
-// stays — the same rule `tomlkeys.remove` follows.
+// `NoSuchKey` when it was not there, and an empty table left behind
+// stays, as `tomlkeys.remove` does.  `WrongType` for a table written as
+// a header or an array of tables.
 //
 // ```novo
 // use tomledit
@@ -199,15 +185,26 @@ pub fn set(d: TomlEdit, path: Str, value: TomlValue) -> Result<TomlEdit, TomlErr
 //     print(tomledit.to_string(d2))         // b = 2\n
 // ```
 pub fn remove(d: TomlEdit, path: Str) -> Result<TomlEdit, TomlError>
-    todo("toml-nv.tomledit.remove")
+    let segs = tomlkeys.path_segments(path)!
+    let doc = tomlparse.parse_document(d.text, 64)!
+    let at = pair_index(doc, segs)
+    if at < 0
+        match tomlkeys.find(d.value, path)
+            Some(existing) =>
+                return Err(WrongType(path, "key", tomlnode.type_name(existing)))
+            None           =>
+                return Err(NoSuchKey(path))
+    let r = doc.pairs[at]
+    if r.section < 0
+        let (from, to) = inline_extent(d.text, r.key_start, r.value_end)
+        return make(splice(d.text, from, to, ""), d.original)
+    make(splice(d.text, line_start(d.text, r.key_start), line_end(d.text, r.value_end), ""), d.original)
 
 // Whether the document still renders as the bytes it was parsed from.
 //
-// `true` for an untouched document, and `true` for one whose edits
-// happened to restore it — setting `port` to the value it already had
-// leaves the text identical, and reporting a change nobody can see
-// would make a tool write a file it did not need to.  That is the
-// question a caller actually has: "do I have to write this file?"
+// `true` for an untouched document, and for one whose edits restored
+// it: setting `port` to the value it already had leaves the text
+// identical.  It answers "does this file need writing?"
 //
 // ```novo
 // use tomledit
@@ -218,18 +215,16 @@ pub fn remove(d: TomlEdit, path: Str) -> Result<TomlEdit, TomlError>
 //     println("${tomledit.is_unchanged(tomledit.set(d, "a", TomlInt(1))!)}")   // true
 // ```
 pub fn is_unchanged(d: TomlEdit) -> Bool
-    todo("toml-nv.tomledit.is_unchanged")
+    d.text == d.original
 
 // The comment attached to a key, without its `#` and without the
 // leading space.
 //
-// A key's comment is the trailing one on its own line if there is one,
-// and otherwise the run of whole-line comments immediately above it
-// with no blank line between.  `None` when there is neither.  It is
-// here because a `--explain` flag, a documentation generator and a
-// migration that wants to carry a note across all need to read the
-// prose a person wrote, and reparsing the file to find it is what
-// every tool does instead today.
+// A key's comment is the trailing one on its line if there is one, and
+// otherwise the run of whole-line comments immediately above it, with
+// no blank line between, joined by line endings.  A table written as a
+// header has only the comments above its header.  `None` when there is
+// neither.
 //
 // ```novo
 // use tomledit
@@ -239,15 +234,29 @@ pub fn is_unchanged(d: TomlEdit) -> Bool
 //     println(tomledit.comment_at(d, "port") ?? "")   // the listening port
 // ```
 pub fn comment_at(d: TomlEdit, path: Str) -> ?Str
-    todo("toml-nv.tomledit.comment_at")
+    let (anchor, trailing_from) = anchor_of(d, path)
+    if anchor < 0
+        return None
+    if trailing_from >= 0
+        let trailing = trailing_comment(d.text, trailing_from)
+        if trailing != ""
+            return Some(trailing)
+    let (from, _) = comment_block(d.text, anchor)
+    if from == line_start(d.text, anchor)
+        return None
+    var lines: [Str] = []
+    for line in str.split(str.slice(d.text, from, line_start(d.text, anchor)), "\n")
+        let t = str.trim(line)
+        if t != ""
+            list.push(lines, comment_text(t))
+    Some(str.join(lines, "\n"))
 
 // Set, replace or remove the comment above a key.
 //
-// `""` removes it.  A multi-line comment is a string with newlines in
-// it, and each line comes back out with a `# ` in front.  The key's
-// own line is untouched: this writes the comment ABOVE, never the
-// trailing one, because a trailing comment has a column a person chose
-// and rewriting it would move it.
+// `""` removes it.  A comment of several lines is a string with line
+// feeds in it, and each line is written with `# ` in front, at the
+// key's indentation.  The key's own line is untouched: this writes the
+// comment above, never the trailing one.
 //
 // ```novo
 // use tomledit
@@ -258,15 +267,27 @@ pub fn comment_at(d: TomlEdit, path: Str) -> ?Str
 //     print(tomledit.to_string(d2))     // # the listening port\nport = 8080\n
 // ```
 pub fn set_comment(d: TomlEdit, path: Str, comment: Str) -> Result<TomlEdit, TomlError>
-    todo("toml-nv.tomledit.set_comment")
+    let (anchor, _) = anchor_of(d, path)
+    if anchor < 0
+        return Err(NoSuchKey(path))
+    let start = line_start(d.text, anchor)
+    let (from, _) = comment_block(d.text, anchor)
+    var block = ""
+    if comment != ""
+        let pad = str.slice(d.text, start, anchor)
+        for line in str.split(comment, "\n")
+            if line == ""
+                block = block + pad + "#\n"
+            else
+                block = block + pad + "# " + line + "\n"
+    make(splice(d.text, from, start, block), d.original)
 
 // The byte span the value at a path occupies, as `(start, end)`.
 //
-// Half-open, 0-based, into `to_string(d)`.  `None` for a path that is
-// not there.  It is what an editor highlights, what a language server
-// reports a diagnostic on, and what a caller doing its own splicing
-// needs — and it is public because a package that kept the spans to
-// itself would make every one of those callers reparse.
+// Half-open and 0-based, into `to_string(d)`.  `None` for a path that
+// is not there, or that names a table, or does not parse.  It is what
+// an editor highlights and what a language server reports a
+// diagnostic on.
 //
 // ```novo
 // use tomledit
@@ -278,13 +299,19 @@ pub fn set_comment(d: TomlEdit, path: Str, comment: Str) -> Result<TomlEdit, Tom
 //         None         => println("no such key")
 // ```
 pub fn span_of(d: TomlEdit, path: Str) -> ?(Int, Int)
-    todo("toml-nv.tomledit.span_of")
+    match tomlkeys.path_segments(path)
+        Ok(segs) =>
+            let canonical = tomlparse.path_text(segs)
+            for i in 0..list.len(d.paths)
+                if d.paths[i] == canonical
+                    return Some((d.spans[2 * i], d.spans[2 * i + 1]))
+            None
+        Err(_)   => None
 
 // The 1-based line and column a path's value starts at.
 //
-// `(-1, -1)` for a path that is not there, matching what `tomlerror`
-// does for a reason with no position — one convention for "no
-// position" in the package rather than two.
+// `(-1, -1)` for a path that `span_of` answers `None` for, the same
+// convention `tomlerror` uses for a reason with no position.
 //
 // ```novo
 // use tomledit
@@ -295,4 +322,220 @@ pub fn span_of(d: TomlEdit, path: Str) -> ?(Int, Int)
 //     println("${l}:${c}")                      // 2:8
 // ```
 pub fn position_of(d: TomlEdit, path: Str) -> (Int, Int)
-    todo("toml-nv.tomledit.position_of")
+    match span_of(d, path)
+        Some((s, _)) => tomlparse.line_col(d.text, s)
+        None         => (0 - 1, 0 - 1)
+
+// A document from its text, with the spans of its leaves.
+fn make(text: Str, original: Str) -> Result<TomlEdit, TomlError>
+    let doc = tomlparse.parse_document(text, 64)!
+    var spans: [Int] = []
+    var paths: [Str] = []
+    for p in tomlkeys.paths(doc.value)
+        for r in doc.pairs
+            if tomlparse.path_text(r.segs) == p
+                list.push(spans, r.value_start)
+                list.push(spans, r.value_end)
+                list.push(paths, p)
+                break
+    Ok(TomlEdit { text: text, original: original, value: doc.value, spans: spans, paths: paths })
+
+// The index of the recorded pair at `segs`, or -1.
+fn pair_index(doc: Parsed, segs: [Str]) -> Int
+    let want = tomlparse.path_text(segs)
+    for i in 0..list.len(doc.pairs)
+        if tomlparse.path_text(doc.pairs[i].segs) == want
+            return i
+    0 - 1
+
+fn splice(text: Str, from: Int, to: Int, with: Str) -> Str
+    str.slice(text, 0, from) + with + str.slice(text, to, str.len(text))
+
+// The offset of the start of the line holding `off`.
+fn line_start(text: Str, off: Int) -> Int
+    var at = off
+    for _ in 0..off
+        if at == 0 or str.byte_at_or(text, at - 1, 0) == '\n'
+            return at
+        at = at - 1
+    at
+
+// The offset just after the line ending of the line holding `off`, or
+// the end of the text.
+fn line_end(text: Str, off: Int) -> Int
+    let n = str.len(text)
+    for i in off..n
+        if str.byte_at_or(text, i, 0) == '\n'
+            return i + 1
+    n
+
+// `rest = text` added under the existing table `base`, as the module
+// header describes.
+fn inserted(text: Str, doc: Parsed, base: [Str], rest: [Str], value: Str) -> Str
+    let base_text = tomlparse.path_text(base)
+    for sp in doc.inlines
+        if list.len(base) > 0 and tomlparse.path_text(sp.segs) == base_text
+            let kv = tomlparse.path_text(rest) + " = " + value
+            if sp.empty
+                return splice(text, sp.open, sp.close + 1, "{ " + kv + " }")
+            var at = sp.close
+            for _ in 0..sp.close
+                let b = str.byte_at_or(text, at - 1, 0)
+                if b != ' ' and b != '\t'
+                    break
+                at = at - 1
+            return splice(text, at, at, ", " + kv)
+    let owner = dotted_owner(doc, base)
+    if owner >= 0
+        let sec = doc.sections[owner]
+        let rel = joined(base[list.len(sec.segs):list.len(base)], rest)
+        return into_section(text, doc, owner, tomlparse.path_text(rel) + " = " + value)
+    if list.len(rest) == 1
+        for i in 0..list.len(doc.sections)
+            let sec = doc.sections[i]
+            if not sec.in_array and tomlparse.path_text(sec.segs) == base_text
+                return into_section(text, doc, i, tomlparse.path_text(rest) + " = " + value)
+    let n = list.len(rest)
+    let head = joined(base, rest[0:n - 1])
+    var out = text
+    if out != "" and not str.ends_with(out, "\n")
+        out = out + "\n"
+    if out != ""
+        out = out + "\n"
+    out + "[" + tomlparse.path_text(head) + "]\n" + tomlparse.path_text(rest[n - 1:n]) + " = " + value + "\n"
+
+// The section whose dotted keys made the table `base`, or -1.
+fn dotted_owner(doc: Parsed, base: [Str]) -> Int
+    let b = list.len(base)
+    if b == 0
+        return 0 - 1
+    for r in doc.pairs
+        if r.section >= 0 and list.len(r.segs) > b and tomlparse.path_text(r.segs[0:b]) == tomlparse.path_text(base)
+            let sec = doc.sections[r.section]
+            if list.len(sec.segs) < b
+                return r.section
+    0 - 1
+
+// A line added to a section: after its last key, with that key's
+// indentation, or straight after its header.  The root section with no
+// keys takes the line before the first header.
+fn into_section(text: Str, doc: Parsed, index: Int, line: Str) -> Str
+    var at = 0 - 1
+    var pad = ""
+    for r in doc.pairs
+        if r.section == index
+            at = line_end(text, r.value_end)
+            let start = line_start(text, r.key_start)
+            pad = str.slice(text, start, r.key_start)
+    if at < 0
+        at = doc.sections[index].body
+        if index == 0
+            at = str.len(text)
+            if list.len(doc.sections) > 1
+                at = doc.sections[1].start
+    var prefix = ""
+    if at > 0 and str.byte_at_or(text, at - 1, 0) != '\n'
+        prefix = "\n"
+    splice(text, at, at, prefix + pad + line + "\n")
+
+fn joined(a: [Str], b: [Str]) -> [Str]
+    var out = a[:]
+    for x in b
+        list.push(out, x)
+    out
+
+// The bytes to take out with a pair of an inline table: the pair, and
+// the comma after it or, for the last pair, the comma before it.
+fn inline_extent(text: Str, from: Int, to: Int) -> (Int, Int)
+    let n = str.len(text)
+    var after = to
+    for _ in to..n
+        let b = str.byte_at_or(text, after, 0)
+        if b != ' ' and b != '\t'
+            break
+        after = after + 1
+    if str.byte_at_or(text, after, 0) == ','
+        after = after + 1
+        for _ in after..n
+            let b = str.byte_at_or(text, after, 0)
+            if b != ' ' and b != '\t'
+                break
+            after = after + 1
+        return (from, after)
+    var before = from
+    for _ in 0..from
+        let b = str.byte_at_or(text, before - 1, 0)
+        if b != ' ' and b != '\t'
+            break
+        before = before - 1
+    if str.byte_at_or(text, before - 1, 0) == ','
+        return (before - 1, to)
+    (from, to)
+
+// Where a path's line starts, for its comments: the key of a pair or
+// the `[` of a header, with the offset a trailing comment would follow,
+// or -1 when a header has none to read.  `(-1, -1)` when the path names
+// neither.
+fn anchor_of(d: TomlEdit, path: Str) -> (Int, Int)
+    match tomlkeys.path_segments(path)
+        Ok(segs) =>
+            let doc = match tomlparse.parse_document(d.text, 64)
+                Ok(x)  => x
+                Err(_) =>
+                    return (0 - 1, 0 - 1)
+            let at = pair_index(doc, segs)
+            if at >= 0
+                return (doc.pairs[at].key_start, doc.pairs[at].value_end)
+            let want = tomlparse.path_text(segs)
+            for sec in doc.sections
+                if list.len(sec.segs) > 0 and not sec.in_array and tomlparse.path_text(sec.segs) == want
+                    return (sec.start, 0 - 1)
+            (0 - 1, 0 - 1)
+        Err(_)   => (0 - 1, 0 - 1)
+
+// The comment after `from` on its line, without its `#` and the blanks
+// after it, or `""`.
+fn trailing_comment(text: Str, from: Int) -> Str
+    let end = line_end(text, from)
+    let rest = str.trim(str.slice(text, from, end))
+    if str.starts_with(rest, "#")
+        return comment_text(rest)
+    ""
+
+// A comment line's text: without its `#` and the blanks after it.
+fn comment_text(line: Str) -> Str
+    str.trim(str.slice(line, 1, str.len(line)))
+
+// The run of whole-line comments straight above the line holding
+// `anchor`, as the offset where it starts and the offset of the line
+// it describes.  The start is the line itself when there is none.
+fn comment_block(text: Str, anchor: Int) -> (Int, Int)
+    let start = line_start(text, anchor)
+    var from = start
+    for _ in 0..start
+        if from == 0
+            break
+        let prev = line_start(text, from - 1)
+        let t = str.trim(str.slice(text, prev, from))
+        if not str.starts_with(t, "#")
+            break
+        from = prev
+    (from, start)
+
+// How many leading segments of `segs` name values in `v`, walking
+// tables only, and the value the walk stopped at.
+fn deepest(v: TomlValue, segs: [Str]) -> (Int, TomlValue)
+    var k = 0
+    var cur = v
+    var going = true
+    for seg in segs
+        if going and tomlnode.type_of(cur) == TypeTable
+            match tomlkeys.child(cur, seg)
+                Some(next) =>
+                    cur = next
+                    k = k + 1
+                None       =>
+                    going = false
+        else
+            going = false
+    (k, cur)
