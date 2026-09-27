@@ -5,6 +5,57 @@ All notable changes to toml-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-09-27
+
+The first implementation of the interface published as 0.0.1: TOML
+1.0.0 read with a position on every refusal, dotted-path access, a
+canonical writer, and an editing document that keeps a file's bytes.
+
+### Behaviour the interface left open
+
+- The parser accepts all 208 valid documents of toml-test's TOML 1.0.0
+  corpus and refuses all 501 invalid ones.  Which table may be defined
+  or extended where follows Python's `tomllib`.
+- A dotted key that reaches into a table a header defined, and a header
+  that defines a table a dotted key made, are `DuplicateKey`, with the
+  line the table was first defined on.
+- `parse_bytes` refuses a zero byte and any byte that is not UTF-8 as
+  `UnexpectedByte` at that byte; `parse` checks UTF-8 too.
+- A fraction of a second finer than a nanosecond is truncated.
+- `tomlwrite` keeps every key where the tree has it.  A table becomes a
+  header only when no plain key follows it in its table, and is written
+  inline otherwise, so a parsed tree written and read back is equal to
+  itself.  A float always carries a point or an exponent.
+- `tomlwrite.check` reports a key defined twice anywhere in a tree,
+  inside arrays too.
+- `tomledit.set` adds a new key after the last key of its section, into
+  the section whose dotted keys made its table, or before an inline
+  table's `}`; a key two or more tables below the nearest existing one
+  opens a header at the end.  It refuses, as `WrongType`, a path that
+  names a table written as a header or passes through an array of
+  tables, which have no single span.  `tomledit.remove` refuses a
+  header's table the same way.
+- `TomlError.message` names the rule the document broke, without the
+  position; `tomlerror.render` adds `file:line:col`.
+- `tomlnode.equal` counts two floats that are not numbers as equal, so
+  a document holding `nan` equals itself after a round trip.
+- The parser lives in a package-internal module, `tomlparse`, shared by
+  `tomlread` and `tomledit`.
+
+### Dependencies and toolchain
+
+- calendar-nv `^0.2.0`, its first implemented release.
+- The toolchain floor is 0.12.0.
+
+### Tests
+
+- `vectors_tests.nv` holds every TOML 1.0.0 document of toml-test.
+  `tests/toml_test.sh` runs the corpus against its own JSON files and
+  against Python's `tomllib`, with the writer and editor round trips.
+- `tomledit_tests.nv`, `tomlwrite_tests.nv` and `edges_tests.nv` cover
+  the edits, the layouts and every refusal; `tests/coverage.sh` reports
+  100% of the lines of `src/`.
+
 ## 0.0.4 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.

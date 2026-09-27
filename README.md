@@ -9,12 +9,6 @@ access, a writer, and an editing document that changes one value and
 leaves the rest of a person's file alone. Its date arms are
 [calendar-nv](https://novo-lang.org/packages/calendar-nv)'s civil types.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release.
-
 ## What it is
 
 A TOML document is a **table**: an ordered list of **pairs**, each a key
@@ -95,14 +89,11 @@ fn main() [io]
                 Ok(next) => println(tomledit.to_string(next))
 ```
 
+The program prints `8080`, then the document with `port = 9090` and
+its comment in place. For a string left open on line 4 at column 12,
 `tomlerror.render(e, "config.toml")` produces
-`config.toml:4:12: a basic string was never closed`, which is the shape
-an editor's error list parses.
-
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a `not implemented:
-toml-nv.<module>.<fn>` panic. The tests are the specification the
-implementation will have to satisfy.
+`config.toml:4:12: a string was never closed`, which is the shape an
+editor's error list parses.
 
 ## What the package contains
 
@@ -147,7 +138,9 @@ that edits a file a person maintains.
 2. **`tomledit.to_string` of `tomledit.parse` is the text it was
    given**, for every text that parses. `set` rewrites the span the
    value occupied and nothing else: the spacing around the `=`, the
-   trailing comment and the blank lines all survive.
+   trailing comment and the blank lines all survive. A new key goes
+   after the last key of its table, and a key two or more tables below
+   the nearest existing one opens a new header at the end of the file.
 3. **A `TomlValue` is a value and a `TomlEdit` is a document.** Two
    trees holding the same data are the same tree, and `tomlnode.equal`
    says so. Two files holding the same data with different comments are
@@ -189,7 +182,9 @@ that edits a file a person maintains.
 14. **Three faults have no position, and answer `-1`.** `NoSuchKey`
     and `WrongType` are about the caller's expectation rather than the
     file, and `Transport` means the stream failed before a line was
-    reached.
+    reached. `tomlwrite.check` reports a key defined twice in a tree
+    as `DuplicateKey` with every position `-1`, because a tree has no
+    lines.
 15. **`tomlerror.message` does not include the position.**
     `tomlerror.line_of` and `col_of` are separate, so a caller renders
     `file:line:col: message` in whatever shape its own diagnostics
@@ -198,14 +193,25 @@ that edits a file a person maintains.
     escapes are applied, a multi-line string's leading newline is
     removed and its line-ending backslashes are honoured. Which of the
     four string forms was used is `tomledit`'s business.
-17. **Nothing here opens a file.** The caller holds the text.
+17. **The canonical writer never moves a key.** A table becomes a
+    `[header]` only when no plain key follows it in its table, because
+    a `key = value` line after a header would belong to the header's
+    table. Otherwise it is written inline. `tomlwrite.to_string` of a
+    parsed tree reads back as an equal tree.
+18. **A path names tables and keys, never an array element.** `a.0` is
+    the key `0` of the table `a`. A key inside an array of tables has
+    no dotted path, so `tomledit` cannot set it and `tomlkeys.at` is the
+    way to reach it in a tree.
+19. **Nothing here opens a file.** The caller holds the text.
     `tomlread.read_all` takes a stream the caller opened, and carries
     its failure through as `Transport` with the host's own `IoError`
     inside, so a caller can still tell a timeout from a truncated file.
+    A document given as bytes that are not UTF-8, or that hold a zero
+    byte, is `UnexpectedByte` at that byte.
 
 ## What is not included
 
-- **Any input or output.** See rule 17.
+- **Any input or output.** See rule 19.
 - **Serialization of novo-lang structs.**
   [serde-nv](https://novo-lang.org/packages/serde-nv) is where that
   belongs.
@@ -241,44 +247,34 @@ that edits a file a person maintains.
 ## Tests
 
 ```bash
-novo test --isolate tests/tomlread_tests.nv    # 15 tests: the grammar and the refusals
-novo test --isolate tests/tomlkeys_tests.nv    #  9 tests: dotted paths and typed reads
-novo test --isolate tests/tomlnode_tests.nv    #  8 tests: the tree and equality
-novo test --isolate tests/tomlcover_tests.nv   #  9 tests: the corners of the format
+novo test tests/tomlread_tests.nv     # the grammar, the refusals, the two round-trip laws
+novo test tests/tomlkeys_tests.nv     # dotted paths and typed reads
+novo test tests/tomlnode_tests.nv     # the tree and equality
+novo test tests/tomlcover_tests.nv    # the rest of the public surface
+novo test tests/tomledit_tests.nv     # what an edit changes and what it leaves alone
+novo test tests/tomlwrite_tests.nv    # the shapes the canonical writer produces
+novo test tests/edges_tests.nv        # every refusal's message, and the edges
+novo test tests/vectors_tests.nv      # the 709 TOML 1.0.0 documents of toml-test
+bash tests/toml_test.sh [checkout]    # toml-test against its own JSON, and tomllib
+bash tests/coverage.sh                # line coverage over src/, merged across suites
 ```
 
-The TOML 1.0.0 specification is the oracle, and `toml-test`'s corpus is
-the vector set the implementation will be measured against. Rust's
-`toml` and `toml_edit` crates are the reference for the split between
-the two writers, and Python's `tomllib` for the shape of the reading
-API and for its insistence that a library parses and does not open
-files. `std.toml` is the in-tree reference for the subset both cover.
+The TOML 1.0.0 specification is the oracle, and
+[toml-test](https://github.com/toml-lang/toml-test)'s corpus is the
+vector set. `vectors_tests.nv` holds every document of its
+`files-toml-1.0.0` list: the 208 a parser must accept, each with the
+tree it must produce, and the 501 it must refuse. `tests/toml_test.sh`
+runs the same documents against the upstream JSON files, number by
+number and instant by instant, and checks three round trips for each
+valid one: the canonical writer in both styles reads back an equal
+tree, and the editing document renders the text unchanged. Where the
+Python interpreter has `tomllib`, it is a second reader: it must accept
+and refuse the same documents and read the same trees.
 
-The suite asserts that the three spellings of a key are one key, that a
-duplicate key is refused with both line numbers, that an inline table
-across a newline is refused, that an integer outside the signed 64-bit
-range is refused at parse time, that `inf` and `nan` are values, that a
-local date-time and an offset date-time are different values, that a
-document nested past the limit answers `TooDeep`, and that an editing
-document renders back to the text it was parsed from.
-
-The tests compile today and fail at run, each on the `not implemented`
-panic that is its body. That is the expected state of an interface
-release. They turn green one at a time as bodies land.
-
-## Implementation status
-
-Nothing is implemented. Every function here is declared with its
-signature and its effect row, and every body is a `todo()`.
-
-| Module | Public types | Functions | Implemented |
-| --- | --- | --- | --- |
-| `tomlnode` | `TomlValue`, `TomlPair`, `TomlType` | 8 | no |
-| `tomlerror` | `TomlError`, with `impl Error` | 3 | no |
-| `tomlread` | — | 8 | no |
-| `tomlkeys` | — | 25 | no |
-| `tomlwrite` | `TomlStyle` | 7 | no |
-| `tomledit` | `TomlEdit` | 11 | no |
+Rust's `toml` and `toml_edit` crates are the reference for the split
+between the two writers, and Python's `tomllib` for the shape of the
+reading API and for the rules about which table may be defined or
+extended where.
 
 ## Licence
 
