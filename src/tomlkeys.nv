@@ -22,6 +22,7 @@
 // the table `a`.  `at` takes an index as an argument instead.
 
 use civil
+use tomlerror.{ TomlError }
 use tomlnode
 use tomlparse
 

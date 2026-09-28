@@ -19,6 +19,7 @@
 
 use std.str
 use civil
+use tomlerror.{ TomlError }
 use tomlnode
 
 // What a node of the store is.

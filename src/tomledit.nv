@@ -33,6 +33,7 @@
 
 use std.bytes
 use std.str
+use tomlerror.{ TomlError }
 use tomlnode
 use tomlkeys
 use tomlwrite

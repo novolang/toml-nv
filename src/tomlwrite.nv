@@ -26,6 +26,7 @@ use std.bytes
 use std.math
 use std.str
 use iso8601
+use tomlerror.{ TomlError }
 use tomlnode
 use tomlparse
 

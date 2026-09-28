@@ -139,6 +139,14 @@ fn test_parse_bytes_checks_utf8_rather_than_assuming_it() [io]
         Err(_)                       => test.fail("wrong reason for a bad byte")
         Ok(_)                        => test.fail("0xFF is not valid UTF-8")
 
+// A source whose stream fails on every read.
+struct FailingSource
+    code: Int
+
+impl Read[] for FailingSource
+    fn read(self, n: Int) -> Result<Bytes, IoError> []
+        Err(IoClosed)
+
 @test
 fn test_read_all_is_charged_what_the_stream_costs_and_not_more() [io]
     // `read_all<S: Read[e]>` binds the trait's effect parameter and its
@@ -161,6 +169,12 @@ fn test_read_all_is_charged_what_the_stream_costs_and_not_more() [io]
         Err(_)                    => test.fail("wrong reason")
         Ok(_)                     => test.fail("three arrays exceed a bound of 2")
     deep.drop()
+
+    test.case("a stream that fails is Transport, carrying the stream's fault")
+    match tomlread.read_all(FailingSource { code: 0 })
+        Err(Transport(IoClosed)) => test.assert(true)
+        Err(_)                   => test.fail("wrong reason for a failed stream")
+        Ok(_)                    => test.fail("a failed stream is no document")
 
 @test
 fn test_the_compact_style_differs_from_the_standard_one() [io]

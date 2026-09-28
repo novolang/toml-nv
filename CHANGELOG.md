@@ -5,6 +5,31 @@ All notable changes to toml-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.1 — 2026-09-28
+
+The package builds beside a program, or another package, that declares
+a variant with the same name as one of `TomlError`'s.  No signature and
+no answer changed.
+
+- Four modules built `TomlError` values with bare constructors such as
+  `NoSuchKey(...)` without importing the enum.  A bare constructor that
+  its own file neither declares nor imports is resolved across the whole
+  build (SPEC § 9.4).  A build that also held yaml-nv, whose `YamlError`
+  declares `NoSuchKey` and `WrongType`, was then refused with E2031
+  inside toml-nv's source; config-nv is such a build.  `tomledit`,
+  `tomlkeys`, `tomlparse` and `tomlwrite` now import the enum by name,
+  `use tomlerror.{ TomlError }`.
+- The change was checked with a suite that declares an enum repeating
+  every variant name of the package's enums: before it, 55 constructor
+  sites were refused, and after it none.  That suite is not shipped.
+  Under `novo test`, an enum in a test file that repeats a package
+  enum's variant names makes the package's values leak when they are
+  dropped, even with identical payloads.  It is a toolchain defect, and
+  the suite lands when it is fixed.
+- A new case in `tests/tomlcover_tests.nv` reads from a stream that
+  fails, and asserts `Transport` with the stream's fault.  It covers
+  the one line of `src/` the 0.1.0 suites left unmeasured.
+
 ## 0.1.0 — 2026-09-27
 
 The first implementation of the interface published as 0.0.1: TOML
