@@ -20,7 +20,7 @@ no answer changed.
   `tomlkeys`, `tomlparse` and `tomlwrite` now import the enum by name,
   `use tomlerror.{ TomlError }`.
 - The change was checked with a suite that declares an enum repeating
-  every variant name of the package's enums: before it, 55 constructor
+  every variant name of the package's enums: before it, 56 constructor
   sites were refused, and after it none.  That suite is not shipped.
   Under `novo test`, an enum in a test file that repeats a package
   enum's variant names makes the package's values leak when they are
