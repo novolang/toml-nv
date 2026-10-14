@@ -1,0 +1,38 @@
+// hostile_tests.nv — nesting, literals and key lists a few kilobytes
+// long.
+
+use std.test
+use tomlread
+use tomledit
+
+fn parsed(r: Result<TomlValue, TomlError>) -> Bool []
+    match r
+        Ok(_)  => true
+        Err(_) => false
+
+fn refused(r: Result<TomlValue, TomlError>) -> Bool []
+    match r
+        Err(_) => true
+        Ok(_)  => false
+
+@test
+fn test_deep_nesting_is_refused_not_recursed_into() [io]
+    test.case("arrays")
+    test.assert(refused(tomlread.parse("a = " + "[".repeat(300000) + "]".repeat(300000) + "\n")))
+    test.case("inline tables")
+    test.assert(refused(tomlread.parse("a = " + "{a=".repeat(100000) + "1" + "}".repeat(100000) + "\n")))
+    test.case("the editing document")
+    match tomledit.parse("a = " + "[".repeat(300000) + "]".repeat(300000) + "\n")
+        Err(_) => test.assert(true)
+        Ok(_)  => test.assert(false)
+
+@test
+fn test_oversized_literals_are_refused() [io]
+    test.case("an integer past 64 bits")
+    test.assert(refused(tomlread.parse("a = 99999999999999999999999999\n")))
+    test.case("a very long integer")
+    test.assert(refused(tomlread.parse("a = " + "9".repeat(5000) + "\n")))
+    test.case("a float exponent past the range")
+    test.assert(refused(tomlread.parse("a = 1e99999999999999999999\n")))
+    test.case("a long dotted key is read")
+    test.assert(parsed(tomlread.parse("a" + ".a".repeat(20000) + " = 1\n")))
