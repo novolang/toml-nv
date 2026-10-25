@@ -180,7 +180,7 @@ pub fn path_of(segments: [Str]) -> Str
 // ```
 pub fn paths(v: TomlValue) -> [Str]
     var out: [Str] = []
-    leaves(v, [], out)
+    leaves(v, [], var out)
     out
 
 // The string at a path, or why not.
@@ -500,7 +500,7 @@ fn leaves(v: TomlValue, above: [Str], var out: [Str])
             var here = above[:]
             list.push(here, pr.key)
             if tomlnode.type_of(pr.value) == TypeTable
-                leaves(pr.value, here, out)
+                leaves(pr.value, here, var out)
             else
                 list.push(out, path_of(here))
 

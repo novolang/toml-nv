@@ -24,6 +24,7 @@ use std.str
 use std.bytes
 use iso8601
 use tomlread
+use tomlnode
 
 // A value in toml-test's tagged JSON form.
 fn render(v: TomlValue) -> Str

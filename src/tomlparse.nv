@@ -116,23 +116,23 @@ fn parse_document(text: Str, max_depth: Int) -> Result<Parsed, TomlError>
         let (l, c) = line_col(text, bad)
         return Err(UnexpectedByte(l, c, str.byte_at_or(text, bad, 0)))
     var p = new_parser(text, max_depth)
-    let root = new_node(p, kind_table(), tomlnode.empty_table(), 0)
+    let root = new_node(var p, kind_table(), tomlnode.empty_table(), 0)
     let none: [Str] = []
     list.push(p.sections, SectionSpan { segs: none, start: 0, body: 0, in_array: false })
     loop
-        skip_blank(p)
+        skip_blank(var p)
         if p.pos >= p.n
             break
         let b = byte(p)
         if b == '#'
-            end_of_line(p)!
+            end_of_line(var p)!
         else if b == '\n' or b == '\r'
-            newline(p)!
+            newline(var p)!
         else if b == '['
-            header(p)!
+            header(var p)!
         else
-            key_value(p)!
-            end_of_line(p)!
+            key_value(var p)!
+            end_of_line(var p)!
     Ok(Parsed { value: build(p, root), pairs: p.pairs, sections: p.sections, inlines: p.inlines })
 
 // Parse one value, the whole text, with nothing after it.
@@ -143,9 +143,9 @@ fn parse_one_value(text: Str, max_depth: Int) -> Result<TomlValue, TomlError>
         return Err(UnexpectedByte(l, c, str.byte_at_or(text, bad, 0)))
     var p = new_parser(text, max_depth)
     let none: [Str] = []
-    skip_blank(p)
+    skip_blank(var p)
     let v = parse_value(p, 0, none, true)!
-    skip_blank(p)
+    skip_blank(var p)
     if p.pos < p.n
         return Err(fault_value(p, p.pos))
     Ok(v)
@@ -153,8 +153,8 @@ fn parse_one_value(text: Str, max_depth: Int) -> Result<TomlValue, TomlError>
 // Parse a dotted key: the whole text, with nothing after it.
 fn parse_key_text(text: Str) -> Result<[Str], TomlError>
     var p = new_parser(text, 1)
-    let segs = parse_key(p)!
-    skip_blank(p)
+    let segs = parse_key(var p)!
+    skip_blank(var p)
     if p.pos < p.n
         let (l, c) = line_col(text, p.pos)
         return Err(BadKey(l, c, text))
@@ -225,8 +225,8 @@ fn nest(var p: Parser, segs: [Str], at: Int) -> Result<Int, TomlError>
     for i in 0..list.len(segs)
         var c = child_of(p, cur, segs[i])
         if c < 0
-            c = new_node(p, kind_table(), tomlnode.empty_table(), at)
-            add_child(p, cur, segs[i], c)
+            c = new_node(var p, kind_table(), tomlnode.empty_table(), at)
+            add_child(var p, cur, segs[i], c)
         if p.kind[c] == kind_array_of_tables()
             c = last_element(p, c)
         if p.kind[c] == kind_value()
@@ -339,7 +339,7 @@ fn unset_all(var p: Parser, segs: [Str])
 
 fn finalize_pending(var p: Parser)
     for segs in p.pending
-        set_flag(p, segs, flag_explicit(), false)
+        set_flag(var p, segs, flag_explicit(), false)
     p.pending = []
 
 fn bits_or(a: Int, b: Int) -> Int
@@ -397,13 +397,13 @@ fn skip_comment(var p: Parser) -> Result<Unit, TomlError>
 // The rest of a line after a value or a header: blanks, an optional
 // comment, and a line ending or the end of the text.
 fn end_of_line(var p: Parser) -> Result<Unit, TomlError>
-    skip_blank(p)
+    skip_blank(var p)
     if byte(p) == '#'
-        skip_comment(p)!
+        skip_comment(var p)!
     if p.pos >= p.n
         return Ok(())
     if at_line_end(p)
-        return newline(p)
+        return newline(var p)
     if byte(p) == '\r'
         return Err(fault_byte(p, p.pos))
     Err(fault_value(p, p.pos))
@@ -411,12 +411,12 @@ fn end_of_line(var p: Parser) -> Result<Unit, TomlError>
 // Blanks, line endings and comments, as an array allows between items.
 fn skip_space(var p: Parser) -> Result<Unit, TomlError>
     loop
-        skip_blank(p)
+        skip_blank(var p)
         let b = byte(p)
         if b == '#'
-            skip_comment(p)!
+            skip_comment(var p)!
         else if b == '\n' or b == '\r'
-            newline(p)!
+            newline(var p)!
         else
             return Ok(())
 
@@ -432,10 +432,10 @@ fn header(var p: Parser) -> Result<Unit, TomlError>
         p.pos = p.pos + 2
     else
         p.pos = p.pos + 1
-    skip_blank(p)
+    skip_blank(var p)
     let key_at = p.pos
-    let segs = parse_key(p)!
-    skip_blank(p)
+    let segs = parse_key(var p)!
+    skip_blank(var p)
     if byte(p) != ']'
         return Err(fault_header(p, p.pos, "is not closed with ]"))
     p.pos = p.pos + 1
@@ -443,12 +443,12 @@ fn header(var p: Parser) -> Result<Unit, TomlError>
         if byte(p) != ']'
             return Err(fault_header(p, p.pos, "for an array of tables is not closed with ]]"))
         p.pos = p.pos + 1
-    finalize_pending(p)
+    finalize_pending(var p)
     if aot
-        array_table(p, segs, key_at)!
+        array_table(var p, segs, key_at)!
     else
-        plain_table(p, segs, key_at)!
-    end_of_line(p)!
+        plain_table(var p, segs, key_at)!
+    end_of_line(var p)!
     p.header = segs[:]
     p.header_in_array = aot or through_array(p, segs)
     list.push(p.sections, SectionSpan { segs: segs, start: start, body: p.pos, in_array: p.header_in_array })
@@ -462,8 +462,8 @@ fn plain_table(var p: Parser, segs: [Str], at: Int) -> Result<Unit, TomlError>
         if existing >= 0 and p.kind[existing] == kind_array_of_tables()
             return Err(fault_kind(p, at, segs))
         return Err(fault_duplicate(p, at, segs, node_at(p, segs)))
-    set_flag(p, segs, flag_explicit(), false)
-    let t = nest(p, segs, at)!
+    set_flag(var p, segs, flag_explicit(), false)
+    let t = nest(var p, segs, at)!
     p.def_at[t] = at
     Ok(())
 
@@ -471,18 +471,18 @@ fn plain_table(var p: Parser, segs: [Str], at: Int) -> Result<Unit, TomlError>
 fn array_table(var p: Parser, segs: [Str], at: Int) -> Result<Unit, TomlError>
     if has_flag(p, segs, flag_frozen())
         return Err(fault_kind(p, at, segs))
-    unset_all(p, segs)
-    set_flag(p, segs, flag_explicit(), false)
+    unset_all(var p, segs)
+    set_flag(var p, segs, flag_explicit(), false)
     let n = list.len(segs)
-    let parent = nest(p, segs[0:n - 1], at)!
+    let parent = nest(var p, segs[0:n - 1], at)!
     var arr = child_of(p, parent, segs[n - 1])
     if arr < 0
-        arr = new_node(p, kind_array_of_tables(), tomlnode.empty_table(), at)
-        add_child(p, parent, segs[n - 1], arr)
+        arr = new_node(var p, kind_array_of_tables(), tomlnode.empty_table(), at)
+        add_child(var p, parent, segs[n - 1], arr)
     else if p.kind[arr] != kind_array_of_tables()
         return Err(fault_kind(p, at, segs))
-    let t = new_node(p, kind_table(), tomlnode.empty_table(), at)
-    add_child(p, arr, "", t)
+    let t = new_node(var p, kind_table(), tomlnode.empty_table(), at)
+    add_child(var p, arr, "", t)
     Ok(())
 
 // The node at `segs` itself, not stepping into an array's last table.
@@ -492,12 +492,12 @@ fn child_at(p: Parser, segs: [Str]) -> Int
 
 fn key_value(var p: Parser) -> Result<Unit, TomlError>
     let key_at = p.pos
-    let rel = parse_key(p)!
-    skip_blank(p)
+    let rel = parse_key(var p)!
+    skip_blank(var p)
     if byte(p) != '='
         return Err(fault_key(p, key_at))
     p.pos = p.pos + 1
-    skip_blank(p)
+    skip_blank(var p)
     var abs = p.header[:]
     for seg in rel
         list.push(abs, seg)
@@ -514,16 +514,16 @@ fn key_value(var p: Parser) -> Result<Unit, TomlError>
     let parent_segs = abs[0:n - 1]
     if has_flag(p, parent_segs, flag_frozen())
         return Err(fault_duplicate(p, key_at, parent_segs, node_at(p, parent_segs)))
-    let parent = nest(p, parent_segs, key_at)!
+    let parent = nest(var p, parent_segs, key_at)!
     let last = abs[n - 1]
     let existing = child_of(p, parent, last)
     if existing >= 0
         return Err(fault_duplicate(p, key_at, abs, existing))
     let is_table = tomlnode.type_of(v) == TypeTable
     if is_table or tomlnode.type_of(v) == TypeArray
-        set_flag(p, abs, flag_frozen(), true)
-    let leaf = new_node(p, kind_value(), v, key_at)
-    add_child(p, parent, last, leaf)
+        set_flag(var p, abs, flag_frozen(), true)
+    let leaf = new_node(var p, kind_value(), v, key_at)
+    add_child(var p, parent, last, leaf)
     if not p.header_in_array and not through_array(p, abs)
         list.push(p.pairs, PairSpan {
             segs: abs, section: p.section, key_start: key_at,
@@ -535,9 +535,9 @@ fn key_value(var p: Parser) -> Result<Unit, TomlError>
 fn parse_key(var p: Parser) -> Result<[Str], TomlError>
     var segs: [Str] = []
     loop
-        skip_blank(p)
-        list.push(segs, simple_key(p)!)
-        skip_blank(p)
+        skip_blank(var p)
+        list.push(segs, simple_key(var p)!)
+        skip_blank(var p)
         if byte(p) != '.'
             return Ok(segs)
         p.pos = p.pos + 1
@@ -553,9 +553,9 @@ fn simple_key(var p: Parser) -> Result<Str, TomlError>
             p.pos = p.pos + 1
         return Ok(str.slice(p.text, start, p.pos))
     if b == '"' and not starts_triple(p, '"')
-        return basic_string(p)
+        return basic_string(var p)
     if b == '\'' and not starts_triple(p, '\'')
-        return literal_string(p)
+        return literal_string(var p)
     Err(fault_key(p, start))
 
 fn is_bare(b: Int) -> Bool
@@ -573,25 +573,25 @@ fn parse_value(var p: Parser, depth: Int, path: [Str],
     let b = byte(p)
     if b == '"'
         if starts_triple(p, '"')
-            return Ok(TomlStr(multiline_basic(p)!))
-        return Ok(TomlStr(basic_string(p)!))
+            return Ok(TomlStr(multiline_basic(var p)!))
+        return Ok(TomlStr(basic_string(var p)!))
     if b == '\''
         if starts_triple(p, '\'')
-            return Ok(TomlStr(multiline_literal(p)!))
-        return Ok(TomlStr(literal_string(p)!))
+            return Ok(TomlStr(multiline_literal(var p)!))
+        return Ok(TomlStr(literal_string(var p)!))
     if b == '['
-        return array_value(p, depth)
+        return array_value(var p, depth)
     if b == '{'
         return inline_table(p, depth, path, in_array)
     if b == 't' or b == 'f'
-        return boolean(p)
+        return boolean(var p)
     if b >= '0' and b <= '9' or b == '+' or b == '-' or b == 'i' or b == 'n'
-        return scalar(p)
+        return scalar(var p)
     Err(fault_value(p, p.pos))
 
 fn boolean(var p: Parser) -> Result<TomlValue, TomlError>
     let start = p.pos
-    let tok = token(p)
+    let tok = token(var p)
     if tok == "true"
         return Ok(TomlBool(true))
     if tok == "false"
@@ -612,10 +612,10 @@ fn token(var p: Parser) -> Str
 // A number, a special float, or a date or time.
 fn scalar(var p: Parser) -> Result<TomlValue, TomlError>
     let start = p.pos
-    var tok = token(p)
+    var tok = token(var p)
     if is_date(tok) and str.len(tok) == 10 and byte(p) == ' ' and is_digit(byte_at(p, p.pos + 1)) and is_digit(byte_at(p, p.pos + 2)) and byte_at(p, p.pos + 3) == ':'
         p.pos = p.pos + 1
-        tok = tok + " " + token(p)
+        tok = tok + " " + token(var p)
     let (l, c) = line_col(p.text, start)
     if tok == "inf" or tok == "+inf"
         return Ok(TomlFloat(1.0 / 0.0))
@@ -656,14 +656,14 @@ fn array_value(var p: Parser, depth: Int) -> Result<TomlValue, TomlError>
     var items: [TomlValue] = []
     let none: [Str] = []
     loop
-        skip_space(p)!
+        skip_space(var p)!
         if p.pos >= p.n
             return Err(fault_inline(p, open))
         if byte(p) == ']'
             p.pos = p.pos + 1
             return Ok(TomlArray(items))
         list.push(items, parse_value(p, depth + 1, none, true)!)
-        skip_space(p)!
+        skip_space(var p)!
         let b = byte(p)
         if b == ','
             p.pos = p.pos + 1
@@ -685,37 +685,37 @@ fn inline_table(var p: Parser, depth: Int, path: [Str],
         let (l, c) = line_col(p.text, open)
         return Err(TooDeep(l, c, p.max_depth))
     p.pos = p.pos + 1
-    let node = new_node(p, kind_table(), tomlnode.empty_table(), open)
-    skip_blank(p)
+    let node = new_node(var p, kind_table(), tomlnode.empty_table(), open)
+    skip_blank(var p)
     var count = 0
     if byte(p) == '}'
         p.pos = p.pos + 1
         list.push(p.inlines, InlineSpan { segs: path, open: open, close: p.pos - 1, empty: true })
         return Ok(build(p, node))
     loop
-        skip_blank(p)
+        skip_blank(var p)
         if p.pos >= p.n or at_line_end(p) or byte(p) == '\n'
             return Err(fault_inline(p, open))
         let key_at = p.pos
-        let rel = parse_key(p)!
-        skip_blank(p)
+        let rel = parse_key(var p)!
+        skip_blank(var p)
         if byte(p) != '='
             return Err(fault_key(p, key_at))
         p.pos = p.pos + 1
-        skip_blank(p)
+        skip_blank(var p)
         var abs = path[:]
         for seg in rel
             list.push(abs, seg)
         let value_start = p.pos
         let v = parse_value(p, depth + 1, abs, in_array)!
-        inline_insert(p, node, rel, v, key_at, path)!
+        inline_insert(var p, node, rel, v, key_at, path)!
         count = count + 1
         if not in_array
             list.push(p.pairs, PairSpan {
                 segs: abs, section: 0 - 1, key_start: key_at,
                 value_start: value_start, value_end: p.pos,
                 is_table: tomlnode.type_of(v) == TypeTable })
-        skip_blank(p)
+        skip_blank(var p)
         let b = byte(p)
         if b == '}'
             p.pos = p.pos + 1
@@ -723,7 +723,7 @@ fn inline_table(var p: Parser, depth: Int, path: [Str],
             return Ok(build(p, node))
         if b == ','
             p.pos = p.pos + 1
-            skip_blank(p)
+            skip_blank(var p)
             if byte(p) == '}'
                 return Err(fault_value(p, p.pos))
         else if p.pos >= p.n or at_line_end(p) or b == '\n'
@@ -740,15 +740,15 @@ fn inline_insert(var p: Parser, node: Int, rel: [Str], v: TomlValue, at: Int,
     for i in 0..n - 1
         var c = child_of(p, cur, rel[i])
         if c < 0
-            c = new_node(p, kind_table(), tomlnode.empty_table(), at)
-            add_child(p, cur, rel[i], c)
+            c = new_node(var p, kind_table(), tomlnode.empty_table(), at)
+            add_child(var p, cur, rel[i], c)
         else if p.kind[c] == kind_value()
             return Err(fault_duplicate(p, at, joined(path, rel[0:i + 1]), c))
         cur = c
     let existing = child_of(p, cur, rel[n - 1])
     if existing >= 0
         return Err(fault_duplicate(p, at, joined(path, rel), existing))
-    add_child(p, cur, rel[n - 1], new_node(p, kind_value(), v, at))
+    add_child(var p, cur, rel[n - 1], new_node(var p, kind_value(), v, at))
     Ok(())
 
 fn joined(a: [Str], b: [Str]) -> [Str]
@@ -774,7 +774,7 @@ fn basic_string(var p: Parser) -> Result<Str, TomlError>
             p.pos = p.pos + 1
             return Ok(out)
         if b == '\\'
-            out = out + str.slice(p.text, start, p.pos) + escape(p)!
+            out = out + str.slice(p.text, start, p.pos) + escape(var p)!
             start = p.pos
         else if b == '\n' or at_line_end(p)
             return Err(fault_unterminated(p, open))
@@ -808,7 +808,7 @@ fn literal_string(var p: Parser) -> Result<Str, TomlError>
 fn multiline_basic(var p: Parser) -> Result<Str, TomlError>
     let open = p.pos
     p.pos = p.pos + 3
-    skip_first_newline(p)
+    skip_first_newline(var p)
     var out = ""
     var start = p.pos
     loop
@@ -823,12 +823,12 @@ fn multiline_basic(var p: Parser) -> Result<Str, TomlError>
         if b == '\\'
             out = out + str.slice(p.text, start, p.pos)
             if line_continues(p)
-                trim_continuation(p)!
+                trim_continuation(var p)!
             else
-                out = out + escape(p)!
+                out = out + escape(var p)!
             start = p.pos
         else if b == '\n' or at_line_end(p)
-            newline(p)!
+            newline(var p)!
         else if is_control(b)
             return Err(fault_byte(p, p.pos))
         else
@@ -838,7 +838,7 @@ fn multiline_basic(var p: Parser) -> Result<Str, TomlError>
 fn multiline_literal(var p: Parser) -> Result<Str, TomlError>
     let open = p.pos
     p.pos = p.pos + 3
-    skip_first_newline(p)
+    skip_first_newline(var p)
     let start = p.pos
     loop
         if p.pos >= p.n
@@ -850,7 +850,7 @@ fn multiline_literal(var p: Parser) -> Result<Str, TomlError>
             p.pos = p.pos + extra + 3
             return Ok(out)
         if b == '\n' or at_line_end(p)
-            newline(p)!
+            newline(var p)!
         else if is_control(b)
             return Err(fault_byte(p, p.pos))
         else
@@ -894,7 +894,7 @@ fn trim_continuation(var p: Parser) -> Result<Unit, TomlError>
         if b == ' ' or b == '\t'
             p.pos = p.pos + 1
         else if b == '\n' or b == '\r'
-            newline(p)!
+            newline(var p)!
         else
             return Ok(())
     Ok(())

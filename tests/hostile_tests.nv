@@ -4,6 +4,8 @@
 use std.test
 use tomlread
 use tomledit
+use tomlerror
+use tomlnode
 
 fn parsed(r: Result<TomlValue, TomlError>) -> Bool []
     match r
