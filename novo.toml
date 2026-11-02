@@ -36,4 +36,4 @@ novo        = ">= 0.21.1"
 # a calendar date are one type.  It validates the dates and times the
 # parser reads, and writes them back out.  It is `core`, as this
 # package is.
-calendar-nv = "^0.2.0"
+calendar-nv = "^0.2.1"
