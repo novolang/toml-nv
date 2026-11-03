@@ -1,6 +1,6 @@
 [package]
 name        = "toml-nv"
-version     = "0.1.2"
+version     = "0.1.3"
 description = "TOML 1.0.0, read and written without performing anything: a typed value tree whose date arms are calendar-nv's civil types, a parser that names the line and the column of every refusal, dotted-key and table access, a canonical writer that preserves nothing, and an editing document that preserves comments, key order and spacing so a tool can change one value and hand the file back."
 license     = "Apache-2.0"
 
@@ -22,7 +22,7 @@ repository  = "https://github.com/novolang/toml-nv"
 maintainers = ["novo-lang"]
 # 0.13.0 is the first toolchain that compares an enum carrying a
 # nested `@value` struct with `==`, which `tomlnode.equal` does.
-novo        = ">= 0.21.1"
+novo        = ">= 0.23.0"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
